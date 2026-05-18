@@ -5,7 +5,7 @@ $$
 I = \{0, 1, \ldots, n - 1\}
 $$
 
-Instructions shoul be divided into batches:
+Instructions should be divided into batches:
 $$
 B = \{0, 1, \ldots, K - 1\}
 $$
@@ -22,6 +22,16 @@ Migration instruction:
 $$
 i = (src_i, dst_i)
 $$
+
+Each migration has unit load because all experts are assumed to have the same
+size:
+
+$$
+w_i = 1
+$$
+
+`hotspot_n` is the per-rank no-hotspot load threshold inside one batch.
+
 #### Variables
 
 $$
@@ -33,14 +43,10 @@ x_{i,b} =
 $$
 
 $$
-z_{b,l} =
-\begin{cases}
-1, & \text{the maximum rank participation count of batch } b \text{ is } l \\
-0, & \text{otherwise}
-\end{cases}
+o_{r,b} \ge 0
 $$
 
-where `l` ranges over `0..n`.
+`o_{r,b}` is the hotspot overflow of rank `r` in batch `b`.
 
 #### Constraints
 
@@ -53,63 +59,54 @@ $$
 \quad \forall i \in I
 $$
 
-##### Each batch can have only one hotspot level
+##### Rank load and hotspot overflow
+
+For a given batch `b` and rank `r`, the load of `r` in `b` is its total send
+and receive migration load:
 
 $$
-\sum_{l=0}^{n} z_{b,l} = 1,
-\quad \forall b \in B
-$$
-
-##### The hotspot level covers each rank's participation count
-
-For a given batch `b` and rank `r`, the participation count of `r` in `b` is:
-
-$$
-participation_{r,b}
+load_{r,b}
 =
 \sum_{i: src_i = r} x_{i,b}
 +
 \sum_{i: dst_i = r} x_{i,b}
 $$
 
-The participation count must be no greater than the batch's hotspot level:
+The overflow variable covers the amount above the no-hotspot threshold:
 
 $$
-participation_{r,b}
-\le
-\sum_{l=0}^{n} l \cdot z_{b,l},
+load_{r,b} - o_{r,b} \le hotspot\_n,
 \quad \forall r \in R, b \in B
 $$
-##### Batch cost
-- Important assumption: `hotspot_n` is the no-hotspot threshold. A batch whose
-  hottest rank has no more than `hotspot_n` source/destination participations
-  keeps the normal linear cost `l`. If the hottest rank has more than
-  `hotspot_n` participations, every extra participation adds 10% overhead on
-  top of the normal linear cost.
 
 $$
-cost(l) =
-\begin{cases}
-0, & l = 0 \\
-l, & 0 < l \le hotspot\_n \\
-l + 0.1(l - hotspot\_n), & l > hotspot\_n
-\end{cases}
+o_{r,b} \ge 0,
+\quad \forall r \in R, b \in B
 $$
 
-
-Therefore:
-
-$$
-cost_b = \sum_{l=0}^{n} cost(l)z_{b,l}
-$$
-
-#### <font color="#f79646">Objective function</font>
-
-Minimize the total cost of all non-empty batches:
+Equivalently:
 
 $$
-\min \sum_{b \in B} cost_b
+o_{r,b} = \max(0, load_{r,b} - hotspot\_n)
 $$
+
+#### Objective function
+
+Minimize total hotspot overflow across all ranks and batches:
+
+$$
+\min \sum_{b \in B} \sum_{r \in R} o_{r,b}
+$$
+
+This replaces the previous fixed 10% hotspot surcharge. A rank with a larger
+amount above `hotspot_n` contributes a larger penalty, so heavier hotspots are
+penalized more than lighter hotspots.
+
+For `ILP/example_hotspot.json`, `hotspot_n = 1` and each migration has unit load.
+If all four migrations are placed in one batch, each rank has load 2 and overflow
+1, so total overflow is 4. The optimized schedule splits the migrations into two
+batches, each rank has load 1 per batch, and total overflow becomes 0.
+
 
 ### Running the script
 

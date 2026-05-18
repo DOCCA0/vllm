@@ -19,7 +19,6 @@ class MigrationInstruction:
     dst_rank: int
     layer: int | None = None
     expert: int | None = None
-    size_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -40,7 +39,6 @@ def load_problem(path: Path) -> tuple[list[MigrationInstruction], ProblemConfig]
             dst_rank=int(item["dst"]),
             layer=item.get("layer"),
             expert=item.get("expert"),
-            size_bytes=item.get("size_bytes"),
         )
         for i, item in enumerate(data["migrations"])
     ]
@@ -66,14 +64,10 @@ def load_problem(path: Path) -> tuple[list[MigrationInstruction], ProblemConfig]
     return instructions, config
 
 
-def batch_cost(max_rank_participation: int, hotspot_n: int) -> float:
-    """Cost of one batch given its hottest rank participation count."""
+def rank_overflow(rank_load: int, hotspot_n: int) -> int:
+    """Rank-local hotspot overflow above the per-batch load threshold."""
 
-    if max_rank_participation <= 0:
-        return 0.0
-    if max_rank_participation <= hotspot_n:
-        return float(max_rank_participation)
-    return max_rank_participation + 0.1 * (max_rank_participation - hotspot_n)
+    return max(0, rank_load - hotspot_n)
 
 
 def solve_with_scipy(
@@ -93,16 +87,20 @@ def solve_with_scipy(
 
     n = len(instructions)
     batch_count = config.max_batch_num
-    max_load = n
+    ranks = sorted(
+        {inst.src_rank for inst in instructions} | {inst.dst_rank for inst in instructions}
+    )
+    rank_count = len(ranks)
+    max_overflow = n
     x_count = n * batch_count
-    z_offset = x_count
-    var_count = x_count + batch_count * (max_load + 1)
+    overflow_offset = x_count
+    var_count = x_count + batch_count * rank_count
 
     def x_idx(i: int, batch: int) -> int:
         return i * batch_count + batch
 
-    def z_idx(batch: int, load: int) -> int:
-        return z_offset + batch * (max_load + 1) + load
+    def overflow_idx(batch: int, rank_pos: int) -> int:
+        return overflow_offset + batch * rank_count + rank_pos
 
     rows: list[tuple[dict[int, float], float, float]] = []
 
@@ -110,22 +108,16 @@ def solve_with_scipy(
     for i, inst in enumerate(instructions):
         rows.append(({x_idx(i, b): 1.0 for b in range(batch_count)}, 1.0, 1.0))
 
-    # Every batch chooses one maximum-rank-participation level.
+    # For every rank and batch, overflow covers send + recv count above hotspot_n.
     for b in range(batch_count):
-        rows.append(({z_idx(b, load): 1.0 for load in range(max_load + 1)}, 1.0, 1.0))
-
-    ranks = sorted({inst.src_rank for inst in instructions} | {inst.dst_rank for inst in instructions})
-
-    # For every rank and batch, the chosen load must cover send + recv count.
-    for b in range(batch_count):
-        for rank in ranks:
-            terms = {z_idx(b, load): -float(load) for load in range(max_load + 1)}
+        for rank_pos, rank in enumerate(ranks):
+            terms = {overflow_idx(b, rank_pos): -1.0}
             for i, inst in enumerate(instructions):
                 if inst.src_rank == rank:
                     terms[x_idx(i, b)] = terms.get(x_idx(i, b), 0.0) + 1.0
                 if inst.dst_rank == rank:
                     terms[x_idx(i, b)] = terms.get(x_idx(i, b), 0.0) + 1.0
-            rows.append((terms, -float("inf"), 0.0))
+            rows.append((terms, -float("inf"), float(config.hotspot_n)))
 
     matrix = lil_matrix((len(rows), var_count), dtype=float)
     lb = np.empty(len(rows), dtype=float)
@@ -138,11 +130,12 @@ def solve_with_scipy(
 
     c = np.zeros(var_count, dtype=float)
     for b in range(batch_count):
-        for load in range(max_load + 1):
-            c[z_idx(b, load)] = batch_cost(load, config.hotspot_n)
+        for rank_pos in range(rank_count):
+            c[overflow_idx(b, rank_pos)] = 1.0
     integrality = np.ones(var_count, dtype=int)
     lower_bounds = np.zeros(var_count, dtype=float)
     upper_bounds = np.ones(var_count, dtype=float)
+    upper_bounds[overflow_offset:] = max_overflow
     options: dict[str, Any] = {}
     if config.time_limit is not None:
         options["time_limit"] = config.time_limit
@@ -181,9 +174,9 @@ def solve_with_scipy(
     )
 
     batches = summarize_batches(schedule, batch_count, config.hotspot_n)
-    makespan = sum(batch["duration"] for batch in batches)
+    total_overflow = sum(batch["batch_overflow"] for batch in batches)
     return {
-        "objective_makespan": makespan,
+        "objective_total_overflow": total_overflow,
         "lower_bound": float(result.mip_dual_bound)
         if getattr(result, "mip_dual_bound", None) is not None
         else None,
@@ -204,17 +197,29 @@ def summarize_batches(
         if not active:
             continue
         rank_counts: dict[int, int] = {}
+        rank_loads: dict[int, int] = {}
         for item in active:
             rank_counts[item["src"]] = rank_counts.get(item["src"], 0) + 1
             rank_counts[item["dst"]] = rank_counts.get(item["dst"], 0) + 1
+            rank_loads[item["src"]] = rank_loads.get(item["src"], 0) + 1
+            rank_loads[item["dst"]] = rank_loads.get(item["dst"], 0) + 1
         max_rank_participation = max(rank_counts.values())
+        max_rank_load = max(rank_loads.values())
+        rank_overflows = {
+            rank: rank_overflow(count, hotspot_n)
+            for rank, count in sorted(rank_loads.items())
+        }
+        batch_overflow = sum(rank_overflows.values())
         batches.append(
             {
                 "batch": t,
-                "duration": batch_cost(max_rank_participation, hotspot_n),
+                "batch_overflow": batch_overflow,
                 "max_rank_participation": max_rank_participation,
+                "max_rank_load": max_rank_load,
                 "hotspot_n": hotspot_n,
                 "rank_participation": dict(sorted(rank_counts.items())),
+                "rank_load": dict(sorted(rank_loads.items())),
+                "rank_overflow": rank_overflows,
                 "active": [
                     f"{_schedule_expert_label(item)}:{item['src']}->{item['dst']}"
                     for item in active
@@ -291,7 +296,9 @@ def build_after_mermaid_diagram(schedule: list[dict[str, Any]]) -> str:
         "  subgraph AFTER[After: scheduled batches]",
         "    direction TB",
     ]
-    for batch in sorted({int(item["batch"]) for item in schedule}):
+    # Mermaid lays sibling subgraphs right-to-left here, so emit them in reverse
+    # to render batch numbers visually from left to right.
+    for batch in sorted({int(item["batch"]) for item in schedule}, reverse=True):
         batch_items = [item for item in schedule if int(item["batch"]) == batch]
         ranks = sorted({int(item["src"]) for item in batch_items} | {int(item["dst"]) for item in batch_items})
         lines.append(f"    subgraph BA{batch}[Batch {batch}]")
