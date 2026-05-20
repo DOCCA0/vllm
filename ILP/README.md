@@ -98,15 +98,6 @@ $$
 \min \sum_{b \in B} \sum_{r \in R} o_{r,b}
 $$
 
-This replaces the previous fixed 10% hotspot surcharge. A rank with a larger
-amount above `hotspot_n` contributes a larger penalty, so heavier hotspots are
-penalized more than lighter hotspots.
-
-For `ILP/example_hotspot.json`, `hotspot_n = 1` and each migration has unit load.
-If all four migrations are placed in one batch, each rank has load 2 and overflow
-1, so total overflow is 4. The optimized schedule splits the migrations into two
-batches, each rank has load 1 per batch, and total overflow becomes 0.
-
 
 ### Running the script
 
