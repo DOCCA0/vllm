@@ -32,8 +32,7 @@ $$
 w_i = 1
 $$
 
-`link_hotspot_n` is the per-directed-link no-hotspot load threshold inside one
-batch.
+`link_capacity` is the normalized per-directed-link capacity inside one batch.
 
 For every migration `i`, fixed ECMP is precomputed from the shortest paths
 between `src_i` and `dst_i`. The constant
@@ -56,10 +55,10 @@ x_{i,b} =
 $$
 
 $$
-h_{e,b} \ge 0
+T_b \ge 0
 $$
 
-`h_{e,b}` is the ECMP link overflow of directed link `e` in batch `b`.
+`T_b` is the execution time of batch `b`, normalized by link capacity.
 
 #### Constraints
 
@@ -72,7 +71,7 @@ $$
 \quad \forall i \in I
 $$
 
-##### ECMP link load and hotspot overflow
+##### ECMP link load and batch time
 
 For a given batch `b` and directed link `e`, the load of `e` is the ECMP split
 traffic from all migrations assigned to that batch:
@@ -83,25 +82,21 @@ link\_load_{e,b}
 \sum_{i \in I} f_{i,e} x_{i,b}
 $$
 
-The link overflow variable covers the amount above the no-hotspot link
-threshold:
+The batch execution time is determined by the most loaded normalized link:
 
 $$
-link\_load_{e,b} - h_{e,b} \le link\_hotspot\_n,
-\quad \forall e \in E, b \in B
-$$
-
-$$
-h_{e,b} \ge 0,
-\quad \forall e \in E, b \in B
+T_b
+=
+\max_{e \in E}
+\frac{link\_load_{e,b}}{link\_capacity_e}
 $$
 
 #### Objective function
 
-Minimize total ECMP link hotspot overflow:
+Minimize total migration execution time across batches:
 
 $$
-\min \sum_{b \in B} \sum_{e \in E} h_{e,b}
+\min \sum_{b \in B} T_b
 $$
 
 

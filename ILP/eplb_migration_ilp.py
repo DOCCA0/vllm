@@ -28,7 +28,7 @@ class NetworkLink:
 
     src_rank: int
     dst_rank: int
-    link_hotspot_n: float | None = None
+    capacity: float | None = None
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ class ECMPNetwork:
 
     links: tuple[NetworkLink, ...]
     directed: bool
-    link_hotspot_n: float
+    link_capacity: float
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,7 @@ def load_problem(path: Path) -> tuple[list[MigrationInstruction], ProblemConfig]
     cfg = data.get("config", {})
     network = _load_network(data.get("network"), cfg)
     if network is None:
-        raise ValueError("network must be provided for ECMP link-hotspot modeling")
+        raise ValueError("network must be provided for ECMP batch-time modeling")
     max_batch_num = int(
         cfg.get("max_batch_num", cfg.get("horizon", len(instructions)))
     )
@@ -92,31 +92,25 @@ def _load_network(data: Any, cfg: dict[str, Any]) -> ECMPNetwork | None:
     if "links" not in data:
         raise ValueError("network.links must be provided when network is set")
 
-    link_hotspot_n = float(
-        data.get("link_hotspot_n", cfg.get("link_hotspot_n", 1.0))
-    )
-    if link_hotspot_n <= 0:
-        raise ValueError("network.link_hotspot_n must be positive")
+    link_capacity = float(data.get("link_capacity", cfg.get("link_capacity", 1.0)))
+    if link_capacity <= 0:
+        raise ValueError("network.link_capacity must be positive")
 
     links: list[NetworkLink] = []
     for item in data["links"]:
         if isinstance(item, dict):
             src_rank = int(item["src"])
             dst_rank = int(item["dst"])
-            link_threshold = (
-                None
-                if item.get("link_hotspot_n") is None
-                else float(item["link_hotspot_n"])
-            )
+            capacity = None if item.get("capacity") is None else float(item["capacity"])
         else:
             src_rank = int(item[0])
             dst_rank = int(item[1])
-            link_threshold = None
+            capacity = None
         if src_rank == dst_rank:
             raise ValueError("network links must connect two distinct ranks")
-        if link_threshold is not None and link_threshold <= 0:
-            raise ValueError("per-link link_hotspot_n must be positive")
-        links.append(NetworkLink(src_rank, dst_rank, link_threshold))
+        if capacity is not None and capacity <= 0:
+            raise ValueError("per-link capacity must be positive")
+        links.append(NetworkLink(src_rank, dst_rank, capacity))
 
     if not links:
         raise ValueError("network.links must not be empty")
@@ -124,7 +118,7 @@ def _load_network(data: Any, cfg: dict[str, Any]) -> ECMPNetwork | None:
     return ECMPNetwork(
         links=tuple(links),
         directed=bool(data.get("directed", False)),
-        link_hotspot_n=link_hotspot_n,
+        link_capacity=link_capacity,
     )
 
 
@@ -147,18 +141,14 @@ def _directed_links(network: ECMPNetwork) -> tuple[tuple[int, int], ...]:
     return tuple(sorted(links))
 
 
-def _link_thresholds(network: ECMPNetwork) -> dict[tuple[int, int], float]:
-    thresholds: dict[tuple[int, int], float] = {}
+def _link_capacities(network: ECMPNetwork) -> dict[tuple[int, int], float]:
+    capacities: dict[tuple[int, int], float] = {}
     for link in network.links:
-        threshold = (
-            network.link_hotspot_n
-            if link.link_hotspot_n is None
-            else link.link_hotspot_n
-        )
-        thresholds[(link.src_rank, link.dst_rank)] = threshold
+        capacity = network.link_capacity if link.capacity is None else link.capacity
+        capacities[(link.src_rank, link.dst_rank)] = capacity
         if not network.directed:
-            thresholds[(link.dst_rank, link.src_rank)] = threshold
-    return thresholds
+            capacities[(link.dst_rank, link.src_rank)] = capacity
+    return capacities
 
 
 def _network_adjacency(
@@ -278,18 +268,16 @@ def solve_with_scipy(
     batch_count = config.max_batch_num
     ecmp_link_fractions = compute_ecmp_link_fractions(instructions, config.network)
     links = _directed_links(config.network)
-    link_thresholds = _link_thresholds(config.network)
-    link_count = len(links)
-    max_overflow = n
+    link_capacities = _link_capacities(config.network)
     x_count = n * batch_count
-    link_overflow_offset = x_count
-    var_count = link_overflow_offset + batch_count * link_count
+    batch_time_offset = x_count
+    var_count = x_count + batch_count
 
     def x_idx(i: int, batch: int) -> int:
         return i * batch_count + batch
 
-    def link_overflow_idx(batch: int, link_pos: int) -> int:
-        return link_overflow_offset + batch * link_count + link_pos
+    def batch_time_idx(batch: int) -> int:
+        return batch_time_offset + batch
 
     rows: list[tuple[dict[int, float], float, float]] = []
 
@@ -297,16 +285,15 @@ def solve_with_scipy(
     for i, inst in enumerate(instructions):
         rows.append(({x_idx(i, b): 1.0 for b in range(batch_count)}, 1.0, 1.0))
 
-    # Under fixed ECMP, each migration contributes a fractional load to every
-    # directed link on its shortest paths.
+    # Batch time is determined by the most loaded normalized fabric link.
     for b in range(batch_count):
-        for link_pos, link in enumerate(links):
-            terms = {link_overflow_idx(b, link_pos): -1.0}
+        for link in links:
+            terms = {batch_time_idx(b): -link_capacities[link]}
             for i in range(n):
                 fraction = ecmp_link_fractions[i].get(link, 0.0)
                 if fraction:
                     terms[x_idx(i, b)] = terms.get(x_idx(i, b), 0.0) + fraction
-            rows.append((terms, -float("inf"), link_thresholds[link]))
+            rows.append((terms, -float("inf"), 0.0))
 
     matrix = lil_matrix((len(rows), var_count), dtype=float)
     lb = np.empty(len(rows), dtype=float)
@@ -319,13 +306,13 @@ def solve_with_scipy(
 
     c = np.zeros(var_count, dtype=float)
     for b in range(batch_count):
-        for link_pos in range(link_count):
-            c[link_overflow_idx(b, link_pos)] = 1.0
+        c[batch_time_idx(b)] = 1.0
     integrality = np.zeros(var_count, dtype=int)
     integrality[:x_count] = 1
     lower_bounds = np.zeros(var_count, dtype=float)
     upper_bounds = np.ones(var_count, dtype=float)
-    upper_bounds[link_overflow_offset:] = max_overflow
+    min_capacity = min(link_capacities.values())
+    upper_bounds[batch_time_offset:] = n / min_capacity
     options: dict[str, Any] = {}
     if config.time_limit is not None:
         options["time_limit"] = config.time_limit
@@ -376,11 +363,10 @@ def solve_with_scipy(
         config.network,
         ecmp_link_fractions,
     )
-    link_total_overflow = sum(batch["link_batch_overflow"] for batch in batches)
+    total_batch_time = sum(batch["batch_time"] for batch in batches)
     return {
-        "objective_value": _clean_float(link_total_overflow),
-        "objective_total_overflow": _clean_float(link_total_overflow),
-        "link_total_overflow": _clean_float(link_total_overflow),
+        "objective_value": _clean_float(total_batch_time),
+        "objective_total_time": _clean_float(total_batch_time),
         "lower_bound": float(result.mip_dual_bound)
         if getattr(result, "mip_dual_bound", None) is not None
         else None,
@@ -399,7 +385,7 @@ def summarize_batches(
     ecmp_link_fractions: dict[int, dict[tuple[int, int], float]],
 ) -> list[dict[str, Any]]:
     batches: list[dict[str, Any]] = []
-    link_thresholds = _link_thresholds(network)
+    link_capacities = _link_capacities(network)
     for t in range(batch_count):
         active = [item for item in schedule if item["start"] <= t < item["end"]]
         if not active:
@@ -411,7 +397,7 @@ def summarize_batches(
         max_rank_load = max(rank_loads.values())
         batch_summary: dict[str, Any] = {
             "batch": t,
-            "batch_overflow": 0.0,
+            "batch_time": 0.0,
             "max_rank_participation": max_rank_load,
             "max_rank_load": max_rank_load,
             "rank_participation": dict(sorted(rank_loads.items())),
@@ -426,23 +412,21 @@ def summarize_batches(
             migration_id = int(item["migration_id"])
             for link, fraction in ecmp_link_fractions[migration_id].items():
                 link_loads[link] = link_loads.get(link, 0.0) + fraction
-        link_overflows = {
-            link: max(0.0, load - link_thresholds[link])
+        link_times = {
+            link: load / link_capacities[link]
             for link, load in sorted(link_loads.items())
         }
-        link_batch_overflow = sum(link_overflows.values())
-        batch_summary["batch_overflow"] = _clean_float(link_batch_overflow)
-        batch_summary["link_batch_overflow"] = _clean_float(link_batch_overflow)
+        batch_time = max(link_times.values())
+        batch_summary["batch_time"] = _clean_float(batch_time)
         batch_summary["max_link_load"] = _clean_float(max(link_loads.values()))
-        batch_summary["link_hotspot_n"] = network.link_hotspot_n
+        batch_summary["link_capacity"] = network.link_capacity
         batch_summary["link_load"] = {
             _link_label(link): _clean_float(load)
             for link, load in sorted(link_loads.items())
         }
-        batch_summary["link_overflow"] = {
-            _link_label(link): _clean_float(overflow)
-            for link, overflow in sorted(link_overflows.items())
-            if overflow > 1e-9
+        batch_summary["link_time"] = {
+            _link_label(link): _clean_float(time)
+            for link, time in sorted(link_times.items())
         }
         batches.append(batch_summary)
     return batches
@@ -572,7 +556,7 @@ def build_link_mermaid_diagram(
         schedule,
         compute_ecmp_link_fractions(instructions, network),
     )
-    thresholds = _link_thresholds(network)
+    capacities = _link_capacities(network)
     lines = [
         "flowchart LR",
         "  classDef gpu fill:#e9fff5,stroke:#23734d,stroke-width:2px;",
@@ -595,7 +579,7 @@ def build_link_mermaid_diagram(
         if not network.directed:
             directions.append((link.dst_rank, link.src_rank))
         load = max(max_loads.get(direction, 0.0) for direction in directions)
-        cap = thresholds[(link.src_rank, link.dst_rank)]
+        cap = capacities[(link.src_rank, link.dst_rank)]
         if load + 1e-9 >= cap:
             label = f"{_clean_float(load)}/{_clean_float(cap)}"
             lines.append(f'    {src_node} {edge}|"{label}"| {dst_node}')
