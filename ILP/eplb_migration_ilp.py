@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,13 +23,31 @@ class MigrationInstruction:
 
 
 @dataclass(frozen=True)
+class NetworkLink:
+    """One fabric link used by fixed ECMP shortest-path routing."""
+
+    src_rank: int
+    dst_rank: int
+    link_hotspot_n: float | None = None
+
+
+@dataclass(frozen=True)
+class ECMPNetwork:
+    """Network topology for fixed ECMP link-load estimation."""
+
+    links: tuple[NetworkLink, ...]
+    directed: bool
+    link_hotspot_n: float
+
+
+@dataclass(frozen=True)
 class ProblemConfig:
     """Hotspot-contention model for migration batch scheduling."""
 
     max_batch_num: int
-    hotspot_n: int
     time_limit: float | None
     mip_rel_gap: float | None
+    network: ECMPNetwork
 
 
 def load_problem(path: Path) -> tuple[list[MigrationInstruction], ProblemConfig]:
@@ -40,34 +59,204 @@ def load_problem(path: Path) -> tuple[list[MigrationInstruction], ProblemConfig]
             layer=item.get("layer"),
             expert=item.get("expert"),
         )
-        for i, item in enumerate(data["migrations"])
+        for item in data["migrations"]
     ]
     if not instructions:
         raise ValueError("migrations must not be empty")
 
     cfg = data.get("config", {})
+    network = _load_network(data.get("network"), cfg)
+    if network is None:
+        raise ValueError("network must be provided for ECMP link-hotspot modeling")
     max_batch_num = int(
         cfg.get("max_batch_num", cfg.get("horizon", len(instructions)))
     )
     config = ProblemConfig(
         max_batch_num=max_batch_num,
-        hotspot_n=int(cfg.get("hotspot_n", 1)),
-        time_limit=(None if cfg.get("time_limit") is None else float(cfg["time_limit"])),
+        time_limit=(
+            None if cfg.get("time_limit") is None else float(cfg["time_limit"])
+        ),
         mip_rel_gap=(
             None if cfg.get("mip_rel_gap") is None else float(cfg["mip_rel_gap"])
         ),
+        network=network,
     )
     if config.max_batch_num <= 0:
         raise ValueError("max_batch_num must be a positive integer")
-    if config.hotspot_n <= 0:
-        raise ValueError("hotspot_n must be a positive integer")
     return instructions, config
 
 
-def rank_overflow(rank_load: int, hotspot_n: int) -> int:
-    """Rank-local hotspot overflow above the per-batch load threshold."""
+def _load_network(data: Any, cfg: dict[str, Any]) -> ECMPNetwork | None:
+    if data is None:
+        return None
+    if "links" not in data:
+        raise ValueError("network.links must be provided when network is set")
 
-    return max(0, rank_load - hotspot_n)
+    link_hotspot_n = float(
+        data.get("link_hotspot_n", cfg.get("link_hotspot_n", 1.0))
+    )
+    if link_hotspot_n <= 0:
+        raise ValueError("network.link_hotspot_n must be positive")
+
+    links: list[NetworkLink] = []
+    for item in data["links"]:
+        if isinstance(item, dict):
+            src_rank = int(item["src"])
+            dst_rank = int(item["dst"])
+            link_threshold = (
+                None
+                if item.get("link_hotspot_n") is None
+                else float(item["link_hotspot_n"])
+            )
+        else:
+            src_rank = int(item[0])
+            dst_rank = int(item[1])
+            link_threshold = None
+        if src_rank == dst_rank:
+            raise ValueError("network links must connect two distinct ranks")
+        if link_threshold is not None and link_threshold <= 0:
+            raise ValueError("per-link link_hotspot_n must be positive")
+        links.append(NetworkLink(src_rank, dst_rank, link_threshold))
+
+    if not links:
+        raise ValueError("network.links must not be empty")
+
+    return ECMPNetwork(
+        links=tuple(links),
+        directed=bool(data.get("directed", False)),
+        link_hotspot_n=link_hotspot_n,
+    )
+
+
+def _link_label(link: tuple[int, int]) -> str:
+    return f"{link[0]}->{link[1]}"
+
+
+def _directed_links(network: ECMPNetwork) -> tuple[tuple[int, int], ...]:
+    links: set[tuple[int, int]] = set()
+    for link in network.links:
+        forward = (link.src_rank, link.dst_rank)
+        if forward in links:
+            raise ValueError(f"duplicate network link {_link_label(forward)}")
+        links.add(forward)
+        if not network.directed:
+            reverse = (link.dst_rank, link.src_rank)
+            if reverse in links:
+                raise ValueError(f"duplicate network link {_link_label(reverse)}")
+            links.add(reverse)
+    return tuple(sorted(links))
+
+
+def _link_thresholds(network: ECMPNetwork) -> dict[tuple[int, int], float]:
+    thresholds: dict[tuple[int, int], float] = {}
+    for link in network.links:
+        threshold = (
+            network.link_hotspot_n
+            if link.link_hotspot_n is None
+            else link.link_hotspot_n
+        )
+        thresholds[(link.src_rank, link.dst_rank)] = threshold
+        if not network.directed:
+            thresholds[(link.dst_rank, link.src_rank)] = threshold
+    return thresholds
+
+
+def _network_adjacency(
+    network: ECMPNetwork,
+) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+    adjacency: dict[int, set[int]] = defaultdict(set)
+    reverse_adjacency: dict[int, set[int]] = defaultdict(set)
+    for link in network.links:
+        adjacency[link.src_rank].add(link.dst_rank)
+        reverse_adjacency[link.dst_rank].add(link.src_rank)
+        if not network.directed:
+            adjacency[link.dst_rank].add(link.src_rank)
+            reverse_adjacency[link.src_rank].add(link.dst_rank)
+
+    forward = {rank: sorted(neighbors) for rank, neighbors in adjacency.items()}
+    reverse = {rank: sorted(neighbors) for rank, neighbors in reverse_adjacency.items()}
+    return forward, reverse
+
+
+def _bfs_distances(source: int, adjacency: dict[int, list[int]]) -> dict[int, int]:
+    distances = {source: 0}
+    queue = deque([source])
+    while queue:
+        node = queue.popleft()
+        for neighbor in adjacency.get(node, []):
+            if neighbor not in distances:
+                distances[neighbor] = distances[node] + 1
+                queue.append(neighbor)
+    return distances
+
+
+def _ecmp_link_fractions_for_pair(
+    src_rank: int,
+    dst_rank: int,
+    adjacency: dict[int, list[int]],
+    reverse_adjacency: dict[int, list[int]],
+) -> dict[tuple[int, int], float]:
+    dist_from_src = _bfs_distances(src_rank, adjacency)
+    if dst_rank not in dist_from_src:
+        raise ValueError(f"no ECMP path from rank {src_rank} to rank {dst_rank}")
+
+    dist_to_dst = _bfs_distances(dst_rank, reverse_adjacency)
+    shortest_len = dist_from_src[dst_rank]
+    ordered_nodes = sorted(dist_from_src, key=lambda node: dist_from_src[node])
+
+    prefix_path_counts: dict[int, int] = defaultdict(int)
+    prefix_path_counts[src_rank] = 1
+    for node in ordered_nodes:
+        for neighbor in adjacency.get(node, []):
+            if dist_from_src.get(neighbor) == dist_from_src[node] + 1:
+                prefix_path_counts[neighbor] += prefix_path_counts[node]
+
+    suffix_path_counts: dict[int, int] = defaultdict(int)
+    suffix_path_counts[dst_rank] = 1
+    for node in reversed(ordered_nodes):
+        for neighbor in adjacency.get(node, []):
+            if (
+                dist_from_src.get(neighbor) == dist_from_src[node] + 1
+                and dist_from_src[node] + 1 + dist_to_dst.get(neighbor, 10**9)
+                == shortest_len
+            ):
+                suffix_path_counts[node] += suffix_path_counts[neighbor]
+
+    total_paths = prefix_path_counts[dst_rank]
+    fractions: dict[tuple[int, int], float] = {}
+    for node in ordered_nodes:
+        for neighbor in adjacency.get(node, []):
+            if (
+                dist_from_src.get(neighbor) == dist_from_src[node] + 1
+                and dist_from_src[node] + 1 + dist_to_dst.get(neighbor, 10**9)
+                == shortest_len
+            ):
+                path_count = prefix_path_counts[node] * suffix_path_counts[neighbor]
+                fractions[(node, neighbor)] = path_count / total_paths
+    return fractions
+
+
+def compute_ecmp_link_fractions(
+    instructions: list[MigrationInstruction], network: ECMPNetwork
+) -> dict[int, dict[tuple[int, int], float]]:
+    adjacency, reverse_adjacency = _network_adjacency(network)
+    pair_cache: dict[tuple[int, int], dict[tuple[int, int], float]] = {}
+    fractions: dict[int, dict[tuple[int, int], float]] = {}
+    for i, inst in enumerate(instructions):
+        pair = (inst.src_rank, inst.dst_rank)
+        if pair not in pair_cache:
+            pair_cache[pair] = _ecmp_link_fractions_for_pair(
+                inst.src_rank,
+                inst.dst_rank,
+                adjacency,
+                reverse_adjacency,
+            )
+        fractions[i] = pair_cache[pair]
+    return fractions
+
+
+def _clean_float(value: float) -> float:
+    return round(value, 6)
 
 
 def solve_with_scipy(
@@ -87,20 +276,20 @@ def solve_with_scipy(
 
     n = len(instructions)
     batch_count = config.max_batch_num
-    ranks = sorted(
-        {inst.src_rank for inst in instructions} | {inst.dst_rank for inst in instructions}
-    )
-    rank_count = len(ranks)
+    ecmp_link_fractions = compute_ecmp_link_fractions(instructions, config.network)
+    links = _directed_links(config.network)
+    link_thresholds = _link_thresholds(config.network)
+    link_count = len(links)
     max_overflow = n
     x_count = n * batch_count
-    overflow_offset = x_count
-    var_count = x_count + batch_count * rank_count
+    link_overflow_offset = x_count
+    var_count = link_overflow_offset + batch_count * link_count
 
     def x_idx(i: int, batch: int) -> int:
         return i * batch_count + batch
 
-    def overflow_idx(batch: int, rank_pos: int) -> int:
-        return overflow_offset + batch * rank_count + rank_pos
+    def link_overflow_idx(batch: int, link_pos: int) -> int:
+        return link_overflow_offset + batch * link_count + link_pos
 
     rows: list[tuple[dict[int, float], float, float]] = []
 
@@ -108,16 +297,16 @@ def solve_with_scipy(
     for i, inst in enumerate(instructions):
         rows.append(({x_idx(i, b): 1.0 for b in range(batch_count)}, 1.0, 1.0))
 
-    # For every rank and batch, overflow covers send + recv count above hotspot_n.
+    # Under fixed ECMP, each migration contributes a fractional load to every
+    # directed link on its shortest paths.
     for b in range(batch_count):
-        for rank_pos, rank in enumerate(ranks):
-            terms = {overflow_idx(b, rank_pos): -1.0}
-            for i, inst in enumerate(instructions):
-                if inst.src_rank == rank:
-                    terms[x_idx(i, b)] = terms.get(x_idx(i, b), 0.0) + 1.0
-                if inst.dst_rank == rank:
-                    terms[x_idx(i, b)] = terms.get(x_idx(i, b), 0.0) + 1.0
-            rows.append((terms, -float("inf"), float(config.hotspot_n)))
+        for link_pos, link in enumerate(links):
+            terms = {link_overflow_idx(b, link_pos): -1.0}
+            for i in range(n):
+                fraction = ecmp_link_fractions[i].get(link, 0.0)
+                if fraction:
+                    terms[x_idx(i, b)] = terms.get(x_idx(i, b), 0.0) + fraction
+            rows.append((terms, -float("inf"), link_thresholds[link]))
 
     matrix = lil_matrix((len(rows), var_count), dtype=float)
     lb = np.empty(len(rows), dtype=float)
@@ -130,12 +319,13 @@ def solve_with_scipy(
 
     c = np.zeros(var_count, dtype=float)
     for b in range(batch_count):
-        for rank_pos in range(rank_count):
-            c[overflow_idx(b, rank_pos)] = 1.0
-    integrality = np.ones(var_count, dtype=int)
+        for link_pos in range(link_count):
+            c[link_overflow_idx(b, link_pos)] = 1.0
+    integrality = np.zeros(var_count, dtype=int)
+    integrality[:x_count] = 1
     lower_bounds = np.zeros(var_count, dtype=float)
     upper_bounds = np.ones(var_count, dtype=float)
-    upper_bounds[overflow_offset:] = max_overflow
+    upper_bounds[link_overflow_offset:] = max_overflow
     options: dict[str, Any] = {}
     if config.time_limit is not None:
         options["time_limit"] = config.time_limit
@@ -150,16 +340,17 @@ def solve_with_scipy(
         options=options,
     )
     if not result.success:
-        raise RuntimeError(f"MILP failed: status={result.status}, message={result.message}")
+        raise RuntimeError(
+            f"MILP failed: status={result.status}, message={result.message}"
+        )
 
-    starts: list[int] = []
     schedule: list[dict[str, Any]] = []
     values = result.x
     for i, inst in enumerate(instructions):
         chosen_batch = max(range(batch_count), key=lambda b: values[x_idx(i, b)])
-        starts.append(chosen_batch)
         schedule.append(
             {
+                "migration_id": i,
                 "layer": inst.layer,
                 "expert": inst.expert,
                 "src": inst.src_rank,
@@ -170,13 +361,26 @@ def solve_with_scipy(
             }
         )
     schedule.sort(
-        key=lambda item: (item["start"], item["src"], item["dst"], item["layer"], item["expert"])
+        key=lambda item: (
+            item["start"],
+            item["src"],
+            item["dst"],
+            item["layer"],
+            item["expert"],
+        )
     )
 
-    batches = summarize_batches(schedule, batch_count, config.hotspot_n)
-    total_overflow = sum(batch["batch_overflow"] for batch in batches)
+    batches = summarize_batches(
+        schedule,
+        batch_count,
+        config.network,
+        ecmp_link_fractions,
+    )
+    link_total_overflow = sum(batch["link_batch_overflow"] for batch in batches)
     return {
-        "objective_total_overflow": total_overflow,
+        "objective_value": _clean_float(link_total_overflow),
+        "objective_total_overflow": _clean_float(link_total_overflow),
+        "link_total_overflow": _clean_float(link_total_overflow),
         "lower_bound": float(result.mip_dual_bound)
         if getattr(result, "mip_dual_bound", None) is not None
         else None,
@@ -189,61 +393,84 @@ def solve_with_scipy(
 
 
 def summarize_batches(
-    schedule: list[dict[str, Any]], batch_count: int, hotspot_n: int
+    schedule: list[dict[str, Any]],
+    batch_count: int,
+    network: ECMPNetwork,
+    ecmp_link_fractions: dict[int, dict[tuple[int, int], float]],
 ) -> list[dict[str, Any]]:
     batches: list[dict[str, Any]] = []
+    link_thresholds = _link_thresholds(network)
     for t in range(batch_count):
         active = [item for item in schedule if item["start"] <= t < item["end"]]
         if not active:
             continue
-        rank_counts: dict[int, int] = {}
         rank_loads: dict[int, int] = {}
         for item in active:
-            rank_counts[item["src"]] = rank_counts.get(item["src"], 0) + 1
-            rank_counts[item["dst"]] = rank_counts.get(item["dst"], 0) + 1
             rank_loads[item["src"]] = rank_loads.get(item["src"], 0) + 1
             rank_loads[item["dst"]] = rank_loads.get(item["dst"], 0) + 1
-        max_rank_participation = max(rank_counts.values())
         max_rank_load = max(rank_loads.values())
-        rank_overflows = {
-            rank: rank_overflow(count, hotspot_n)
-            for rank, count in sorted(rank_loads.items())
+        batch_summary: dict[str, Any] = {
+            "batch": t,
+            "batch_overflow": 0.0,
+            "max_rank_participation": max_rank_load,
+            "max_rank_load": max_rank_load,
+            "rank_participation": dict(sorted(rank_loads.items())),
+            "rank_load": dict(sorted(rank_loads.items())),
+            "active": [
+                f"{_schedule_expert_label(item)}:{item['src']}->{item['dst']}"
+                for item in active
+            ],
         }
-        batch_overflow = sum(rank_overflows.values())
-        batches.append(
-            {
-                "batch": t,
-                "batch_overflow": batch_overflow,
-                "max_rank_participation": max_rank_participation,
-                "max_rank_load": max_rank_load,
-                "hotspot_n": hotspot_n,
-                "rank_participation": dict(sorted(rank_counts.items())),
-                "rank_load": dict(sorted(rank_loads.items())),
-                "rank_overflow": rank_overflows,
-                "active": [
-                    f"{_schedule_expert_label(item)}:{item['src']}->{item['dst']}"
-                    for item in active
-                ],
-            }
-        )
+        link_loads: dict[tuple[int, int], float] = {}
+        for item in active:
+            migration_id = int(item["migration_id"])
+            for link, fraction in ecmp_link_fractions[migration_id].items():
+                link_loads[link] = link_loads.get(link, 0.0) + fraction
+        link_overflows = {
+            link: max(0.0, load - link_thresholds[link])
+            for link, load in sorted(link_loads.items())
+        }
+        link_batch_overflow = sum(link_overflows.values())
+        batch_summary["batch_overflow"] = _clean_float(link_batch_overflow)
+        batch_summary["link_batch_overflow"] = _clean_float(link_batch_overflow)
+        batch_summary["max_link_load"] = _clean_float(max(link_loads.values()))
+        batch_summary["link_hotspot_n"] = network.link_hotspot_n
+        batch_summary["link_load"] = {
+            _link_label(link): _clean_float(load)
+            for link, load in sorted(link_loads.items())
+        }
+        batch_summary["link_overflow"] = {
+            _link_label(link): _clean_float(overflow)
+            for link, overflow in sorted(link_overflows.items())
+            if overflow > 1e-9
+        }
+        batches.append(batch_summary)
     return batches
 
 
 
 def _expert_label(inst: MigrationInstruction) -> str:
-    if inst.layer is not None and inst.expert is not None:
-        return f"L{inst.layer}_E{inst.expert}"
-    if inst.expert is not None:
-        return f"E{inst.expert}"
-    return f"{inst.src_rank}->{inst.dst_rank}"
+    return _migration_label(
+        inst.layer,
+        inst.expert,
+        f"{inst.src_rank}->{inst.dst_rank}",
+    )
 
 
 def _schedule_expert_label(item: dict[str, Any]) -> str:
-    if item.get("layer") is not None and item.get("expert") is not None:
-        return f"L{item['layer']}_E{item['expert']}"
-    if item.get("expert") is not None:
-        return f"E{item['expert']}"
-    return f"{item['src']}->{item['dst']}"
+    return _migration_label(
+        item.get("layer"),
+        item.get("expert"),
+        f"{item['src']}->{item['dst']}",
+    )
+
+
+def _migration_label(layer: int | None, expert: int | None, fallback: str) -> str:
+    if layer is not None and expert is not None:
+        return f"L{layer}_E{expert}"
+    if expert is not None:
+        return f"E{expert}"
+    return fallback
 
 
 def _mermaid_id(*parts: object) -> str:
@@ -258,31 +485,22 @@ def build_before_mermaid_diagram(instructions: list[MigrationInstruction]) -> st
     lines = [
         "flowchart LR",
         "  classDef rank fill:#eef5ff,stroke:#275d9f,stroke-width:2px;",
-        "  classDef expert fill:#ffffff,stroke:#4f9fef,color:#1f4e79;",
         "  subgraph BEFORE[Before: planned expert transfers]",
         "    direction LR",
     ]
-    ranks = sorted({inst.src_rank for inst in instructions} | {inst.dst_rank for inst in instructions})
-    src_nodes: dict[int, str] = {}
-    dst_nodes: dict[int, str] = {}
+    ranks = sorted(
+        {inst.src_rank for inst in instructions}
+        | {inst.dst_rank for inst in instructions}
+    )
     for rank in ranks:
-        lines.append(f"    subgraph BR{rank}[Rank {rank}]")
-        lines.append("      direction TB")
-        for i, inst in enumerate(instructions):
-            if inst.src_rank == rank:
-                node = _mermaid_id("before", "src", i)
-                src_nodes[i] = node
-                lines.append(f'      {node}["src {_mermaid_label(_expert_label(inst))}"]')
-                lines.append(f"      class {node} expert")
-            if inst.dst_rank == rank:
-                node = _mermaid_id("before", "dst", i)
-                dst_nodes[i] = node
-                lines.append(f'      {node}["dst {_mermaid_label(_expert_label(inst))}"]')
-                lines.append(f"      class {node} expert")
-        lines.append("    end")
-        lines.append(f"    class BR{rank} rank")
-    for i, inst in enumerate(instructions):
-        lines.append(f"    {src_nodes[i]} --> {dst_nodes[i]}")
+        node = _mermaid_id("before", "rank", rank)
+        lines.append(f'    {node}["Rank {rank}"]')
+        lines.append(f"    class {node} rank")
+    for inst in instructions:
+        src_node = _mermaid_id("before", "rank", inst.src_rank)
+        dst_node = _mermaid_id("before", "rank", inst.dst_rank)
+        label = _mermaid_label(_expert_label(inst))
+        lines.append(f'    {src_node} -->|"{label}"| {dst_node}')
     lines.append("  end")
     return "\n".join(lines) + "\n"
 
@@ -291,7 +509,6 @@ def build_after_mermaid_diagram(schedule: list[dict[str, Any]]) -> str:
     lines = [
         "flowchart TB",
         "  classDef rank fill:#eef5ff,stroke:#275d9f,stroke-width:2px;",
-        "  classDef expert fill:#ffffff,stroke:#4f9fef,color:#1f4e79;",
         "  classDef batch fill:#fff8e6,stroke:#d19a00,stroke-width:2px;",
         "  subgraph AFTER[After: scheduled batches]",
         "    direction TB",
@@ -300,32 +517,93 @@ def build_after_mermaid_diagram(schedule: list[dict[str, Any]]) -> str:
     # to render batch numbers visually from left to right.
     for batch in sorted({int(item["batch"]) for item in schedule}, reverse=True):
         batch_items = [item for item in schedule if int(item["batch"]) == batch]
-        ranks = sorted({int(item["src"]) for item in batch_items} | {int(item["dst"]) for item in batch_items})
+        ranks = sorted(
+            {int(item["src"]) for item in batch_items}
+            | {int(item["dst"]) for item in batch_items}
+        )
         lines.append(f"    subgraph BA{batch}[Batch {batch}]")
         lines.append("      direction LR")
-        send_nodes: dict[int, str] = {}
-        recv_nodes: dict[int, str] = {}
         for rank in ranks:
-            lines.append(f"      subgraph BA{batch}_R{rank}[Rank {rank}]")
-            lines.append("        direction TB")
-            for idx, item in enumerate(batch_items):
-                label = _schedule_expert_label(item)
-                if int(item["src"]) == rank:
-                    node = _mermaid_id("after", batch, idx, "src")
-                    send_nodes[idx] = node
-                    lines.append(f'        {node}["send {_mermaid_label(label)}"]')
-                    lines.append(f"        class {node} expert")
-                if int(item["dst"]) == rank:
-                    node = _mermaid_id("after", batch, idx, "dst")
-                    recv_nodes[idx] = node
-                    lines.append(f'        {node}["recv {_mermaid_label(label)}"]')
-                    lines.append(f"        class {node} expert")
-            lines.append("      end")
-            lines.append(f"      class BA{batch}_R{rank} rank")
-        for idx, item in enumerate(batch_items):
-            lines.append(f"      {send_nodes[idx]} --> {recv_nodes[idx]}")
+            node = _mermaid_id("after", batch, "rank", rank)
+            lines.append(f'      {node}["Rank {rank}"]')
+            lines.append(f"      class {node} rank")
+        for item in batch_items:
+            src_node = _mermaid_id("after", batch, "rank", item["src"])
+            dst_node = _mermaid_id("after", batch, "rank", item["dst"])
+            label = _mermaid_label(_schedule_expert_label(item))
+            lines.append(f'      {src_node} -->|"{label}"| {dst_node}')
         lines.append("    end")
         lines.append(f"    class BA{batch} batch")
+    lines.append("  end")
+    return "\n".join(lines) + "\n"
+
+
+def _max_link_loads(
+    schedule: list[dict[str, Any]],
+    ecmp_link_fractions: dict[int, dict[tuple[int, int], float]],
+) -> dict[tuple[int, int], float]:
+    max_loads: dict[tuple[int, int], float] = {}
+    batches = sorted({int(item["batch"]) for item in schedule})
+    for batch in batches:
+        loads: dict[tuple[int, int], float] = {}
+        for item in schedule:
+            if int(item["batch"]) != batch:
+                continue
+            migration_id = int(item["migration_id"])
+            for link, fraction in ecmp_link_fractions[migration_id].items():
+                loads[link] = loads.get(link, 0.0) + fraction
+        for link, load in loads.items():
+            max_loads[link] = max(max_loads.get(link, 0.0), load)
+    return max_loads
+
+
+def build_link_mermaid_diagram(
+    instructions: list[MigrationInstruction],
+    network: ECMPNetwork,
+    schedule: list[dict[str, Any]],
+) -> str:
+    endpoint_ranks = {inst.src_rank for inst in instructions} | {
+        inst.dst_rank for inst in instructions
+    }
+    ranks = sorted({link.src_rank for link in network.links} | {
+        link.dst_rank for link in network.links
+    })
+    max_loads = _max_link_loads(
+        schedule,
+        compute_ecmp_link_fractions(instructions, network),
+    )
+    thresholds = _link_thresholds(network)
+    lines = [
+        "flowchart LR",
+        "  classDef gpu fill:#e9fff5,stroke:#23734d,stroke-width:2px;",
+        "  classDef fabric fill:#fff4df,stroke:#9a6200,stroke-width:2px;",
+        "  subgraph LINKS[ECMP communication links]",
+        "    direction LR",
+    ]
+    for rank in ranks:
+        node = _mermaid_id("link", rank)
+        role = "GPU rank" if rank in endpoint_ranks else "NVSwitch/fabric"
+        lines.append(f'    {node}["{role} {rank}"]')
+        node_class = "gpu" if rank in endpoint_ranks else "fabric"
+        lines.append(f"    class {node} {node_class}")
+    edge = "-->" if network.directed else "---"
+    hot_edges: list[int] = []
+    for edge_idx, link in enumerate(network.links):
+        src_node = _mermaid_id("link", link.src_rank)
+        dst_node = _mermaid_id("link", link.dst_rank)
+        directions = [(link.src_rank, link.dst_rank)]
+        if not network.directed:
+            directions.append((link.dst_rank, link.src_rank))
+        load = max(max_loads.get(direction, 0.0) for direction in directions)
+        cap = thresholds[(link.src_rank, link.dst_rank)]
+        if load + 1e-9 >= cap:
+            label = f"{_clean_float(load)}/{_clean_float(cap)}"
+            lines.append(f'    {src_node} {edge}|"{label}"| {dst_node}')
+            hot_edges.append(edge_idx)
+        else:
+            lines.append(f"    {src_node} {edge} {dst_node}")
+    for edge_idx in hot_edges:
+        lines.append(f"    linkStyle {edge_idx} stroke:#b91c1c,stroke-width:4px")
     lines.append("  end")
     return "\n".join(lines) + "\n"
 
@@ -358,13 +636,18 @@ def write_migration_visualization(
     config: ProblemConfig,
     schedule: list[dict[str, Any]],
     output_path: Path,
-) -> None:
-    """Write before/after migration schematics to separate PNG files via Mermaid."""
+) -> list[Path]:
+    """Write migration and ECMP link schematics to separate PNG files."""
 
-    del config
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    before_output = output_path.with_name(f"{output_path.stem}_before{output_path.suffix}")
-    after_output = output_path.with_name(f"{output_path.stem}_after{output_path.suffix}")
+    before_output = output_path.with_name(
+        f"{output_path.stem}_before{output_path.suffix}"
+    )
+    after_output = output_path.with_name(
+        f"{output_path.stem}_after{output_path.suffix}"
+    )
+    link_output = output_path.with_name(f"{output_path.stem}_links{output_path.suffix}")
+    rendered_outputs = [before_output, after_output]
     temp_paths: list[Path] = []
 
     def render_mermaid(mermaid_source: str, png_path: Path) -> None:
@@ -395,6 +678,12 @@ def write_migration_visualization(
     try:
         render_mermaid(build_before_mermaid_diagram(instructions), before_output)
         render_mermaid(build_after_mermaid_diagram(schedule), after_output)
+        if config.network is not None:
+            render_mermaid(
+                build_link_mermaid_diagram(instructions, config.network, schedule),
+                link_output,
+            )
+            rendered_outputs.append(link_output)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
             "Mermaid CLI failed to render PNG:\n"
@@ -404,6 +693,7 @@ def write_migration_visualization(
     finally:
         for path in temp_paths:
             path.unlink(missing_ok=True)
+    return rendered_outputs
 
 
 def main() -> None:
@@ -424,13 +714,14 @@ def main() -> None:
     text = json.dumps(solution, indent=2, ensure_ascii=False)
     print(text)
     if args.visualize_png is not None:
-        write_migration_visualization(
+        output_paths = write_migration_visualization(
             instructions,
             config,
             solution["schedule"],
             args.visualize_png,
         )
-        print(f"Wrote PNG visualization to {args.visualize_png}")
+        rendered = ", ".join(str(path) for path in output_paths)
+        print(f"Wrote PNG visualizations to {rendered}")
 
 
 if __name__ == "__main__":

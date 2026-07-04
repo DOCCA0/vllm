@@ -1,9 +1,53 @@
 {
   "config": {
     "max_batch_num": 4,
-    "hotspot_n": 2,
     "time_limit": 30,
     "mip_rel_gap": 0
+  },
+  "network": {
+    "link_hotspot_n": 1.0,
+    "links": [
+      {
+        "src": 0,
+        "dst": 5
+      },
+      {
+        "src": 0,
+        "dst": 6
+      },
+      {
+        "src": 1,
+        "dst": 5
+      },
+      {
+        "src": 1,
+        "dst": 6
+      },
+      {
+        "src": 2,
+        "dst": 5
+      },
+      {
+        "src": 2,
+        "dst": 6
+      },
+      {
+        "src": 3,
+        "dst": 5
+      },
+      {
+        "src": 3,
+        "dst": 6
+      },
+      {
+        "src": 4,
+        "dst": 5
+      },
+      {
+        "src": 4,
+        "dst": 6
+      }
+    ]
   },
   "migrations": [
     {
@@ -27,19 +71,19 @@
     {
       "layer": 0,
       "expert": 4,
-      "src": 0,
-      "dst": 4
+      "src": 4,
+      "dst": 0
     },
     {
       "layer": 0,
       "expert": 5,
-      "src": 2,
+      "src": 0,
       "dst": 3
     },
-        {
+    {
       "layer": 0,
       "expert": 6,
-      "src": 3,
+      "src": 0,
       "dst": 4
     }
   ]
