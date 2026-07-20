@@ -149,6 +149,7 @@ async def transfer_run_periodically(
                             cuda_stream.wait_event(model_state.buffer_consumed_event)
                             model_state.buffer_consumed_event = None
 
+                        eplb_config = state.parallel_config.eplb_config
                         (
                             model_state.is_unchanged,
                             model_state.is_received_locally,
@@ -162,6 +163,9 @@ async def transfer_run_periodically(
                             communicator=model_state.communicator,
                             is_profile=is_profile,
                             cuda_stream=cuda_stream,
+                            migration_batching=eplb_config.use_migration_batching,
+                            migration_batching_policy=eplb_config.migration_batching_policy,
+                            migration_batching_max_batches=eplb_config.migration_batching_max_batches,
                         )
                         # block the async thread until the transfer to
                         # the intermediate buffer is complete.

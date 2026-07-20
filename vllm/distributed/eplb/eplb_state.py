@@ -808,6 +808,7 @@ class EplbState:
                 )
 
                 # Update expert weights
+                eplb_config = self.parallel_config.eplb_config
                 rearrange_expert_weights_inplace(
                     eplb_model_state.physical_to_logical_map,
                     new_physical_to_logical_map,
@@ -816,6 +817,9 @@ class EplbState:
                     eplb_model_state.communicator,
                     is_profile,
                     rank_mapping,
+                    migration_batching=eplb_config.use_migration_batching,
+                    migration_batching_policy=eplb_config.migration_batching_policy,
+                    migration_batching_max_batches=eplb_config.migration_batching_max_batches,
                 )
 
                 if not is_profile:

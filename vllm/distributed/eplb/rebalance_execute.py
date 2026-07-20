@@ -13,7 +13,17 @@ import numpy as np
 import torch
 from torch.distributed import ProcessGroup, all_gather
 
+from vllm.logger import init_logger
+
 from .eplb_communicator import EplbCommunicator
+from .migration_scheduler import (
+    MigrationInstruction,
+    MigrationOrder,
+    build_migration_instructions,
+    schedule_migrations_greedy,
+)
+
+logger = init_logger(__name__)
 
 
 @dataclass
@@ -141,6 +151,40 @@ def get_ep_ranks_with_experts_batch(
     return ranks_to_send_map, ranks_to_recv_map
 
 
+def _execute_migration_batch(
+    batch: list[MigrationInstruction],
+    num_local_experts: int,
+    old_indices: np.ndarray,
+    new_indices: np.ndarray,
+    ep_rank: int,
+    expert_weights: Sequence[torch.Tensor],
+    expert_weights_buffers: Sequence[torch.Tensor],
+    communicator: EplbCommunicator,
+) -> None:
+    """Post one wave of conflict-free P2P expert transfers and wait."""
+    for inst in batch:
+        if inst.src_rank == ep_rank:
+            base = ep_rank * num_local_experts
+            local_old = old_indices[base : base + num_local_experts]
+            src_matches = np.nonzero(local_old == inst.expert)[0]
+            if src_matches.size == 0:
+                continue
+            src_row = int(src_matches[0])
+            for w in expert_weights:
+                communicator.add_send(w[src_row], inst.dst_rank)
+        elif inst.dst_rank == ep_rank:
+            base = ep_rank * num_local_experts
+            local_new = new_indices[base : base + num_local_experts]
+            dst_matches = np.nonzero(local_new == inst.expert)[0]
+            if dst_matches.size == 0:
+                continue
+            dst_row = int(dst_matches[0])
+            for b in expert_weights_buffers:
+                communicator.add_recv(b[dst_row], inst.src_rank)
+
+    communicator.execute()
+
+
 def move_to_buffer(
     num_local_experts: int,
     old_indices: np.ndarray,
@@ -150,6 +194,9 @@ def move_to_buffer(
     cuda_stream: torch.cuda.Stream | None,
     ep_rank: int,
     communicator: EplbCommunicator,
+    migration_batching: bool = False,
+    migration_batching_policy: MigrationOrder = "degree_desc",
+    migration_batching_max_batches: int | None = None,
 ) -> MoveToBufferResult:
     """
     Rearranges expert weights during EPLB rebalancing.
@@ -165,6 +212,10 @@ def move_to_buffer(
         cuda_stream: CUDA stream for async copies (can be None for sync mode).
         ep_rank: Rank of this process in expert parallel group.
         communicator: EplbCommunicator instance for P2P communication.
+        migration_batching: If True, schedule remote P2P transfers into
+            conflict-free batches instead of launching them all at once.
+        migration_batching_policy: Greedy ordering policy for batching.
+        migration_batching_max_batches: Soft limit on the number of batches.
 
     Returns:
         is_unchanged (np.ndarray): (num_local_experts,), True where an expert row
@@ -241,71 +292,105 @@ def move_to_buffer(
                     for w, b in zip(expert_weights, expert_weights_buffers):
                         b[dst].copy_(w[src_local], non_blocking=True)
 
-    # 2. Post sends
-    if send_count > 0:
-        experts = send_expert_ids[:send_count]
-        srcs = send_src_rows[:send_count]
-        order = np.argsort(experts, kind="stable")
-        experts = experts[order]
-        srcs = srcs[order]
+    # 2/3/4. Remote transfers: either batched or all-at-once.
+    do_remote = send_count > 0 or recv_count > 0
+    if not migration_batching or not do_remote:
+        # 2. Post sends
+        if send_count > 0:
+            experts = send_expert_ids[:send_count]
+            srcs = send_src_rows[:send_count]
+            order = np.argsort(experts, kind="stable")
+            experts = experts[order]
+            srcs = srcs[order]
 
-        send_map, recv_map = get_ep_ranks_with_experts_batch(
-            experts,
-            num_local_experts,
-            old_indices,
-            new_indices,
+            send_map, recv_map = get_ep_ranks_with_experts_batch(
+                experts,
+                num_local_experts,
+                old_indices,
+                new_indices,
+            )
+
+            for expert, src in zip(experts.tolist(), srcs.tolist()):
+                ranks_to_send = send_map[expert]
+                ranks_to_recv = recv_map[expert]
+                if not ranks_to_send or not ranks_to_recv:
+                    continue
+                num_dst_per_sender = len(ranks_to_recv) // len(ranks_to_send)
+                sender_pos = ranks_to_send.index(ep_rank)
+                recv_begin = sender_pos * num_dst_per_sender
+                recv_end = recv_begin + num_dst_per_sender
+                recv_ranks = ranks_to_recv[recv_begin:recv_end]
+                remainder_start = len(ranks_to_send) * num_dst_per_sender
+                recver_pos = remainder_start + sender_pos
+                if recver_pos < len(ranks_to_recv):
+                    recv_ranks.append(ranks_to_recv[recver_pos])
+                for dst in recv_ranks:
+                    for w in expert_weights:
+                        communicator.add_send(w[src], dst)
+
+        # 3. Post recvs
+        if recv_count > 0:
+            experts = recv_expert_ids[:recv_count]
+            dsts = recv_dst_rows[:recv_count]
+            order = np.argsort(experts, kind="stable")
+            experts = experts[order]
+            dsts = dsts[order]
+
+            send_map, recv_map = get_ep_ranks_with_experts_batch(
+                experts,
+                num_local_experts,
+                old_indices,
+                new_indices,
+            )
+
+            for expert, dst in zip(experts.tolist(), dsts.tolist()):
+                ranks_to_send = send_map[expert]
+                ranks_to_recv = recv_map[expert]
+                if not ranks_to_send or not ranks_to_recv:
+                    continue
+                num_dst_per_sender = len(ranks_to_recv) // len(ranks_to_send)
+                recver_pos = ranks_to_recv.index(ep_rank)
+                remainder_start = len(ranks_to_send) * num_dst_per_sender
+                if recver_pos < remainder_start:
+                    src = ranks_to_send[recver_pos // num_dst_per_sender]
+                else:
+                    src = ranks_to_send[recver_pos - remainder_start]
+                for b in expert_weights_buffers:
+                    communicator.add_recv(b[dst], src)
+
+        # 4. Execute the P2P operations. The real communication happens here.
+        communicator.execute()
+    else:
+        instructions = build_migration_instructions(
+            num_local_experts, old_indices, new_indices
+        )
+        batches = schedule_migrations_greedy(
+            instructions, order=migration_batching_policy
         )
 
-        for expert, src in zip(experts.tolist(), srcs.tolist()):
-            ranks_to_send = send_map[expert]
-            ranks_to_recv = recv_map[expert]
-            if not ranks_to_send or not ranks_to_recv:
-                continue
-            num_dst_per_sender = len(ranks_to_recv) // len(ranks_to_send)
-            sender_pos = ranks_to_send.index(ep_rank)
-            recv_begin = sender_pos * num_dst_per_sender
-            recv_end = recv_begin + num_dst_per_sender
-            recv_ranks = ranks_to_recv[recv_begin:recv_end]
-            remainder_start = len(ranks_to_send) * num_dst_per_sender
-            recver_pos = remainder_start + sender_pos
-            if recver_pos < len(ranks_to_recv):
-                recv_ranks.append(ranks_to_recv[recver_pos])
-            for dst in recv_ranks:
-                for w in expert_weights:
-                    communicator.add_send(w[src], dst)
+        if (
+            migration_batching_max_batches is not None
+            and len(batches) > migration_batching_max_batches
+        ):
+            logger.warning(
+                "EPLB migration batching produced %d batches, exceeding the "
+                "soft limit of %d. The full schedule will still be executed.",
+                len(batches),
+                migration_batching_max_batches,
+            )
 
-    # 3. Post recvs
-    if recv_count > 0:
-        experts = recv_expert_ids[:recv_count]
-        dsts = recv_dst_rows[:recv_count]
-        order = np.argsort(experts, kind="stable")
-        experts = experts[order]
-        dsts = dsts[order]
+        for batch in batches:
+            _execute_migration_batch(
+                batch=batch,
+                num_local_experts=num_local_experts,
+                old_indices=old_indices,
+                new_indices=new_indices,
+                ep_rank=ep_rank,
+                expert_weights=expert_weights,
+                expert_weights_buffers=expert_weights_buffers,
+                communicator=communicator,
+            )
 
-        send_map, recv_map = get_ep_ranks_with_experts_batch(
-            experts,
-            num_local_experts,
-            old_indices,
-            new_indices,
-        )
-
-        for expert, dst in zip(experts.tolist(), dsts.tolist()):
-            ranks_to_send = send_map[expert]
-            ranks_to_recv = recv_map[expert]
-            if not ranks_to_send or not ranks_to_recv:
-                continue
-            num_dst_per_sender = len(ranks_to_recv) // len(ranks_to_send)
-            recver_pos = ranks_to_recv.index(ep_rank)
-            remainder_start = len(ranks_to_send) * num_dst_per_sender
-            if recver_pos < remainder_start:
-                src = ranks_to_send[recver_pos // num_dst_per_sender]
-            else:
-                src = ranks_to_send[recver_pos - remainder_start]
-            for b in expert_weights_buffers:
-                communicator.add_recv(b[dst], src)
-
-    # 4. Execute the P2P operations. The real communication happens here.
-    communicator.execute()
     # wait for the communication to finish
     return (
         is_unchanged,
@@ -408,6 +493,9 @@ async def transfer_layer(
     is_profile: bool = False,
     cuda_stream: torch.cuda.Stream | None = None,
     rank_mapping: dict[int, int] | None = None,
+    migration_batching: bool = False,
+    migration_batching_policy: MigrationOrder = "degree_desc",
+    migration_batching_max_batches: int | None = None,
 ) -> MoveToBufferResult:
     """
     Rearranges the expert weights in place according to the new expert indices.
@@ -429,6 +517,10 @@ async def transfer_layer(
             communications to reserve enough memory for the buffers.
         cuda_stream: CUDA stream for async copies (can be None for sync mode).
         rank_mapping: Optional rank mapping for elastic expert parallelism.
+        migration_batching: If True, schedule remote P2P transfers into
+            conflict-free batches.
+        migration_batching_policy: Greedy ordering policy for batching.
+        migration_batching_max_batches: Soft limit on the number of batches.
 
     Returns:
         is_unchanged (np.ndarray): (num_local_experts,), True where expert
@@ -479,6 +571,9 @@ async def transfer_layer(
         cuda_stream=cuda_stream,
         ep_rank=ep_group.rank(),
         communicator=communicator,
+        migration_batching=migration_batching,
+        migration_batching_policy=migration_batching_policy,
+        migration_batching_max_batches=migration_batching_max_batches,
     )
     return is_unchanged, is_received_locally, recv_metadata
 
@@ -491,6 +586,9 @@ def rearrange_expert_weights_inplace(
     communicator: EplbCommunicator,
     is_profile: bool = False,
     rank_mapping: dict[int, int] | None = None,
+    migration_batching: bool = False,
+    migration_batching_policy: MigrationOrder = "degree_desc",
+    migration_batching_max_batches: int | None = None,
 ) -> None:
     """
     Rearranges the expert weights in place according to the new expert indices.
@@ -511,6 +609,10 @@ def rearrange_expert_weights_inplace(
             This is used during profile run, where we only perform dummy
             communications to reserve enough memory for the buffers.
         rank_mapping: A dictionary mapping old rank to new rank.
+        migration_batching: If True, schedule remote P2P transfers into
+            conflict-free batches.
+        migration_batching_policy: Greedy ordering policy for batching.
+        migration_batching_max_batches: Soft limit on the number of batches.
     """
     if rank_mapping is not None:
         if len(rank_mapping) == ep_group.size():
@@ -576,6 +678,9 @@ def rearrange_expert_weights_inplace(
             cuda_stream=None,
             ep_rank=ep_rank,
             communicator=communicator,
+            migration_batching=migration_batching,
+            migration_batching_policy=migration_batching_policy,
+            migration_batching_max_batches=migration_batching_max_batches,
         )
 
         move_from_buffer(
