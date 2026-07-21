@@ -1,53 +1,18 @@
 {
   "config": {
-    "max_batch_num": 4,
     "time_limit": 30,
     "mip_rel_gap": 0
   },
   "network": {
-    "link_capacity": 1.0,
-    "links": [
-      {
-        "src": 0,
-        "dst": 5
-      },
-      {
-        "src": 0,
-        "dst": 6
-      },
-      {
-        "src": 1,
-        "dst": 5
-      },
-      {
-        "src": 1,
-        "dst": 6
-      },
-      {
-        "src": 2,
-        "dst": 5
-      },
-      {
-        "src": 2,
-        "dst": 6
-      },
-      {
-        "src": 3,
-        "dst": 5
-      },
-      {
-        "src": 3,
-        "dst": 6
-      },
-      {
-        "src": 4,
-        "dst": 5
-      },
-      {
-        "src": 4,
-        "dst": 6
-      }
-    ]
+    "num_gpus": 8,
+    "gpus_per_node": 4,
+    "nvswitches_per_node": 2,
+    "nvlink_capacity": 18.0,
+    "fabric_capacity": 2.0,
+    "inference_traffic": {
+      "nvlink": 0.4,
+      "fabric": 0.6
+    }
   },
   "migrations": [
     {
@@ -59,32 +24,44 @@
     {
       "layer": 0,
       "expert": 2,
-      "src": 2,
-      "dst": 0
+      "src": 4,
+      "dst": 2
     },
     {
       "layer": 0,
       "expert": 3,
-      "src": 3,
-      "dst": 0
+      "src": 5,
+      "dst": 3
     },
     {
       "layer": 0,
       "expert": 4,
-      "src": 4,
-      "dst": 0
+      "src": 6,
+      "dst": 2
     },
     {
       "layer": 0,
       "expert": 5,
-      "src": 0,
-      "dst": 3
+      "src": 7,
+      "dst": 1
     },
     {
       "layer": 0,
       "expert": 6,
       "src": 0,
       "dst": 4
+    },
+    {
+      "layer": 0,
+      "expert": 7,
+      "src": 1,
+      "dst": 5
+    },
+    {
+      "layer": 0,
+      "expert": 8,
+      "src": 1,
+      "dst": 6
     }
   ]
 }

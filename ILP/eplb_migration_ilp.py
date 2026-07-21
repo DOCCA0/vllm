@@ -29,6 +29,7 @@ class NetworkLink:
     src_rank: int
     dst_rank: int
     capacity: float | None = None
+    background: float | None = None
 
 
 @dataclass(frozen=True)
@@ -38,13 +39,14 @@ class ECMPNetwork:
     links: tuple[NetworkLink, ...]
     directed: bool
     link_capacity: float
+    num_gpus: int | None = None
+    vertex_roles: dict[int, str] | None = None
 
 
 @dataclass(frozen=True)
 class ProblemConfig:
     """Hotspot-contention model for migration batch scheduling."""
 
-    max_batch_num: int
     time_limit: float | None
     mip_rel_gap: float | None
     network: ECMPNetwork
@@ -68,11 +70,18 @@ def load_problem(path: Path) -> tuple[list[MigrationInstruction], ProblemConfig]
     network = _load_network(data.get("network"), cfg)
     if network is None:
         raise ValueError("network must be provided for ECMP batch-time modeling")
-    max_batch_num = int(
-        cfg.get("max_batch_num", cfg.get("horizon", len(instructions)))
-    )
+    for i, inst in enumerate(instructions):
+        if inst.src_rank == inst.dst_rank:
+            raise ValueError(f"migration {i} has identical src and dst")
+        if network.num_gpus is not None and not (
+            0 <= inst.src_rank < network.num_gpus
+            and 0 <= inst.dst_rank < network.num_gpus
+        ):
+            raise ValueError(
+                f"migration {i} ({inst.src_rank}->{inst.dst_rank}) is outside "
+                f"the GPU rank range 0..{network.num_gpus - 1}"
+            )
     config = ProblemConfig(
-        max_batch_num=max_batch_num,
         time_limit=(
             None if cfg.get("time_limit") is None else float(cfg["time_limit"])
         ),
@@ -81,64 +90,152 @@ def load_problem(path: Path) -> tuple[list[MigrationInstruction], ProblemConfig]
         ),
         network=network,
     )
-    if config.max_batch_num <= 0:
-        raise ValueError("max_batch_num must be a positive integer")
     return instructions, config
+
+
+def _background_fraction(spec: Any, tier: str) -> float:
+    """Resolve an inference-traffic fraction for one link tier."""
+
+    if spec is None:
+        return 0.0
+    if isinstance(spec, (int, float)):
+        fraction = float(spec)
+    elif isinstance(spec, dict):
+        fraction = float(spec.get(tier, spec.get("default", 0.0)))
+    else:
+        raise ValueError("network.inference_traffic must be a number or an object")
+    if not 0.0 <= fraction < 1.0:
+        raise ValueError("inference traffic fractions must be in [0, 1)")
+    return fraction
+
+
+def _parse_link(item: Any, default_background: float) -> NetworkLink:
+    if isinstance(item, dict):
+        src_rank = int(item["src"])
+        dst_rank = int(item["dst"])
+        capacity = None if item.get("capacity") is None else float(item["capacity"])
+        background = (
+            default_background
+            if item.get("background") is None
+            else float(item["background"])
+        )
+    else:
+        src_rank = int(item[0])
+        dst_rank = int(item[1])
+        capacity = None
+        background = default_background
+    if src_rank == dst_rank:
+        raise ValueError("network links must connect two distinct ranks")
+    if capacity is not None and capacity <= 0:
+        raise ValueError("per-link capacity must be positive")
+    if not 0.0 <= background < 1.0:
+        raise ValueError("per-link background must be in [0, 1)")
+    return NetworkLink(src_rank, dst_rank, capacity, background)
+
+
+def _validate_unique_links(links: list[NetworkLink], directed: bool) -> None:
+    seen: set[tuple[int, int]] = set()
+    for link in links:
+        pair = (link.src_rank, link.dst_rank)
+        if pair in seen or (not directed and (pair[1], pair[0]) in seen):
+            raise ValueError(f"duplicate network link {_link_label(pair)}")
+        seen.add(pair)
+
+
+def _build_hierarchical_network(
+    data: dict[str, Any], link_capacity: float, traffic: Any
+) -> ECMPNetwork:
+    """Build a 3-tier GPU -> NVSwitch -> cluster-fabric topology.
+
+    Layer 1 (GPU): ranks 0..num_gpus-1.
+    Layer 2 (node): every node owns nvswitches_per_node NVSwitch vertices
+    (default 1); each of the node's gpus_per_node GPUs connects to all of
+    them with nvlink_capacity links (default 18x the fabric capacity, i.e.
+    900 GB/s NVLink 4 vs 50 GB/s NDR 400G). A single NVSwitch per node makes
+    every pair's shortest path unique and ECMP degenerates to 1.0 per link;
+    two or more NVSwitches per node create equal-cost paths through each
+    switch, which is what gives ECMP real alternatives to split over.
+    Layer 3 (cluster fabric): the NVSwitches interconnect over IB/RoCE
+    via one spine vertex with fabric_capacity links.
+    """
+
+    try:
+        num_gpus = int(data["num_gpus"])
+        gpus_per_node = int(data["gpus_per_node"])
+    except KeyError as exc:
+        raise ValueError(
+            "hierarchical network needs num_gpus and gpus_per_node"
+        ) from exc
+    if num_gpus <= 0 or gpus_per_node <= 0:
+        raise ValueError("num_gpus and gpus_per_node must be positive integers")
+    if num_gpus % gpus_per_node != 0:
+        raise ValueError("num_gpus must be a multiple of gpus_per_node")
+    nvswitches_per_node = int(data.get("nvswitches_per_node", 1))
+    if nvswitches_per_node <= 0:
+        raise ValueError("nvswitches_per_node must be a positive integer")
+
+    num_nodes = num_gpus // gpus_per_node
+    nvlink_capacity = float(data.get("nvlink_capacity", 18.0 * link_capacity))
+    fabric_capacity = float(data.get("fabric_capacity", link_capacity))
+    if nvlink_capacity <= 0 or fabric_capacity <= 0:
+        raise ValueError("nvlink_capacity and fabric_capacity must be positive")
+    nvlink_background = _background_fraction(traffic, "nvlink")
+    fabric_background = _background_fraction(traffic, "fabric")
+
+    spine = num_gpus + num_nodes * nvswitches_per_node
+    roles = {spine: "Cluster spine (IB/RoCE)"}
+    links: list[NetworkLink] = []
+    for node in range(num_nodes):
+        for index in range(nvswitches_per_node):
+            switch = num_gpus + node * nvswitches_per_node + index
+            roles[switch] = f"Node {node} NVSwitch {index}"
+            for gpu in range(node * gpus_per_node, (node + 1) * gpus_per_node):
+                links.append(
+                    NetworkLink(gpu, switch, nvlink_capacity, nvlink_background)
+                )
+            links.append(NetworkLink(switch, spine, fabric_capacity, fabric_background))
+
+    _validate_unique_links(links, directed=False)
+    return ECMPNetwork(
+        links=tuple(links),
+        directed=False,
+        link_capacity=link_capacity,
+        num_gpus=num_gpus,
+        vertex_roles=roles,
+    )
 
 
 def _load_network(data: Any, cfg: dict[str, Any]) -> ECMPNetwork | None:
     if data is None:
         return None
-    if "links" not in data:
-        raise ValueError("network.links must be provided when network is set")
 
     link_capacity = float(data.get("link_capacity", cfg.get("link_capacity", 1.0)))
     if link_capacity <= 0:
         raise ValueError("network.link_capacity must be positive")
 
-    links: list[NetworkLink] = []
-    for item in data["links"]:
-        if isinstance(item, dict):
-            src_rank = int(item["src"])
-            dst_rank = int(item["dst"])
-            capacity = None if item.get("capacity") is None else float(item["capacity"])
-        else:
-            src_rank = int(item[0])
-            dst_rank = int(item[1])
-            capacity = None
-        if src_rank == dst_rank:
-            raise ValueError("network links must connect two distinct ranks")
-        if capacity is not None and capacity <= 0:
-            raise ValueError("per-link capacity must be positive")
-        links.append(NetworkLink(src_rank, dst_rank, capacity))
+    traffic = data.get("inference_traffic", cfg.get("inference_traffic"))
+    if "num_gpus" in data or "gpus_per_node" in data:
+        return _build_hierarchical_network(data, link_capacity, traffic)
 
+    if "links" not in data:
+        raise ValueError("network.links must be provided when network is set")
+
+    default_background = _background_fraction(traffic, "default")
+    links = [_parse_link(item, default_background) for item in data["links"]]
     if not links:
         raise ValueError("network.links must not be empty")
 
+    directed = bool(data.get("directed", False))
+    _validate_unique_links(links, directed)
     return ECMPNetwork(
         links=tuple(links),
-        directed=bool(data.get("directed", False)),
+        directed=directed,
         link_capacity=link_capacity,
     )
 
 
 def _link_label(link: tuple[int, int]) -> str:
     return f"{link[0]}->{link[1]}"
-
-
-def _directed_links(network: ECMPNetwork) -> tuple[tuple[int, int], ...]:
-    links: set[tuple[int, int]] = set()
-    for link in network.links:
-        forward = (link.src_rank, link.dst_rank)
-        if forward in links:
-            raise ValueError(f"duplicate network link {_link_label(forward)}")
-        links.add(forward)
-        if not network.directed:
-            reverse = (link.dst_rank, link.src_rank)
-            if reverse in links:
-                raise ValueError(f"duplicate network link {_link_label(reverse)}")
-            links.add(reverse)
-    return tuple(sorted(links))
 
 
 def _link_capacities(network: ECMPNetwork) -> dict[tuple[int, int], float]:
@@ -149,6 +246,34 @@ def _link_capacities(network: ECMPNetwork) -> dict[tuple[int, int], float]:
         if not network.directed:
             capacities[(link.dst_rank, link.src_rank)] = capacity
     return capacities
+
+
+def _background_loads(network: ECMPNetwork) -> dict[tuple[int, int], float]:
+    """Absolute inference background traffic reserved on each directed link."""
+
+    capacities = _link_capacities(network)
+    loads: dict[tuple[int, int], float] = {}
+    for link in network.links:
+        fraction = link.background or 0.0
+        if not fraction:
+            continue
+        capacity = capacities[(link.src_rank, link.dst_rank)]
+        loads[(link.src_rank, link.dst_rank)] = fraction * capacity
+        if not network.directed:
+            loads[(link.dst_rank, link.src_rank)] = fraction * capacity
+    return loads
+
+
+def _effective_capacities(network: ECMPNetwork) -> dict[tuple[int, int], float]:
+    """Per-directed-link capacity left for migrations after reserving the
+    sustained inference traffic rate on that link."""
+
+    capacities = _link_capacities(network)
+    background = _background_loads(network)
+    return {
+        link: capacity - background.get(link, 0.0)
+        for link, capacity in capacities.items()
+    }
 
 
 def _network_adjacency(
@@ -265,10 +390,16 @@ def solve_with_scipy(
         ) from exc
 
     n = len(instructions)
-    batch_count = config.max_batch_num
+    # One migration per batch is always feasible (each migration's path
+    # fractions fit the effective capacities, checked below), so n batches
+    # are a sufficient upper bound; unused batches simply take zero time.
+    batch_count = n
     ecmp_link_fractions = compute_ecmp_link_fractions(instructions, config.network)
-    links = _directed_links(config.network)
-    link_capacities = _link_capacities(config.network)
+    links = sorted(
+        {link for fractions in ecmp_link_fractions.values() for link in fractions}
+    )
+    effective_capacities = _effective_capacities(config.network)
+    background_loads = _background_loads(config.network)
     x_count = n * batch_count
     batch_time_offset = x_count
     var_count = x_count + batch_count
@@ -285,10 +416,36 @@ def solve_with_scipy(
     for i, inst in enumerate(instructions):
         rows.append(({x_idx(i, b): 1.0 for b in range(batch_count)}, 1.0, 1.0))
 
-    # Batch time is determined by the most loaded normalized fabric link.
+    # Hard per-batch link capacity: one wave cannot push more concurrent
+    # migration traffic over a link than its effective capacity. This is what
+    # forces migrations into multiple waves — a purely soft time constraint
+    # would always admit a single-wave optimum.
+    for i in range(n):
+        for link, fraction in ecmp_link_fractions[i].items():
+            if fraction > effective_capacities[link] + 1e-9:
+                raise ValueError(
+                    f"migration {i} ({instructions[i].src_rank}->"
+                    f"{instructions[i].dst_rank}) needs {fraction:.6g} on link "
+                    f"{_link_label(link)} above its effective capacity "
+                    f"{effective_capacities[link]:.6g}; increase link capacity "
+                    "or lower inference_traffic"
+                )
     for b in range(batch_count):
         for link in links:
-            terms = {batch_time_idx(b): -link_capacities[link]}
+            terms = {
+                x_idx(i, b): fraction
+                for i in range(n)
+                if (fraction := ecmp_link_fractions[i].get(link, 0.0))
+            }
+            if terms:
+                rows.append((terms, -float("inf"), effective_capacities[link]))
+
+    # Batch time is determined by the most loaded normalized fabric link.
+    # Sustained inference traffic reserves part of each link's bandwidth, so
+    # migrations only see the remaining effective capacity.
+    for b in range(batch_count):
+        for link in links:
+            terms = {batch_time_idx(b): -effective_capacities[link]}
             for i in range(n):
                 fraction = ecmp_link_fractions[i].get(link, 0.0)
                 if fraction:
@@ -311,7 +468,7 @@ def solve_with_scipy(
     integrality[:x_count] = 1
     lower_bounds = np.zeros(var_count, dtype=float)
     upper_bounds = np.ones(var_count, dtype=float)
-    min_capacity = min(link_capacities.values())
+    min_capacity = min(effective_capacities[link] for link in links)
     upper_bounds[batch_time_offset:] = n / min_capacity
     options: dict[str, Any] = {}
     if config.time_limit is not None:
@@ -343,10 +500,15 @@ def solve_with_scipy(
                 "src": inst.src_rank,
                 "dst": inst.dst_rank,
                 "batch": chosen_batch,
-                "start": chosen_batch,
-                "end": chosen_batch + 1,
             }
         )
+    # Compact batch ids so empty batches do not leave numbering gaps.
+    used_batches = sorted({item["batch"] for item in schedule})
+    batch_remap = {batch: new for new, batch in enumerate(used_batches)}
+    for item in schedule:
+        item["batch"] = batch_remap[item["batch"]]
+        item["start"] = item["batch"]
+        item["end"] = item["batch"] + 1
     schedule.sort(
         key=lambda item: (
             item["start"],
@@ -362,11 +524,11 @@ def solve_with_scipy(
         batch_count,
         config.network,
         ecmp_link_fractions,
+        background_loads,
     )
     total_batch_time = sum(batch["batch_time"] for batch in batches)
     return {
         "objective_value": _clean_float(total_batch_time),
-        "objective_total_time": _clean_float(total_batch_time),
         "lower_bound": float(result.mip_dual_bound)
         if getattr(result, "mip_dual_bound", None) is not None
         else None,
@@ -383,9 +545,11 @@ def summarize_batches(
     batch_count: int,
     network: ECMPNetwork,
     ecmp_link_fractions: dict[int, dict[tuple[int, int], float]],
+    background_loads: dict[tuple[int, int], float] | None = None,
 ) -> list[dict[str, Any]]:
     batches: list[dict[str, Any]] = []
-    link_capacities = _link_capacities(network)
+    effective_capacities = _effective_capacities(network)
+    background_loads = background_loads or {}
     for t in range(batch_count):
         active = [item for item in schedule if item["start"] <= t < item["end"]]
         if not active:
@@ -398,9 +562,7 @@ def summarize_batches(
         batch_summary: dict[str, Any] = {
             "batch": t,
             "batch_time": 0.0,
-            "max_rank_participation": max_rank_load,
             "max_rank_load": max_rank_load,
-            "rank_participation": dict(sorted(rank_loads.items())),
             "rank_load": dict(sorted(rank_loads.items())),
             "active": [
                 f"{_schedule_expert_label(item)}:{item['src']}->{item['dst']}"
@@ -413,7 +575,7 @@ def summarize_batches(
             for link, fraction in ecmp_link_fractions[migration_id].items():
                 link_loads[link] = link_loads.get(link, 0.0) + fraction
         link_times = {
-            link: load / link_capacities[link]
+            link: load / effective_capacities[link]
             for link, load in sorted(link_loads.items())
         }
         batch_time = max(link_times.values())
@@ -424,13 +586,17 @@ def summarize_batches(
             _link_label(link): _clean_float(load)
             for link, load in sorted(link_loads.items())
         }
+        if background_loads:
+            batch_summary["background_load"] = {
+                _link_label(link): _clean_float(background_loads.get(link, 0.0))
+                for link in sorted(link_loads)
+            }
         batch_summary["link_time"] = {
             _link_label(link): _clean_float(time)
             for link, time in sorted(link_times.items())
         }
         batches.append(batch_summary)
     return batches
-
 
 
 def _expert_label(inst: MigrationInstruction) -> str:
@@ -497,9 +663,10 @@ def build_after_mermaid_diagram(schedule: list[dict[str, Any]]) -> str:
         "  subgraph AFTER[After: scheduled batches]",
         "    direction TB",
     ]
-    # Mermaid lays sibling subgraphs right-to-left here, so emit them in reverse
-    # to render batch numbers visually from left to right.
-    for batch in sorted({int(item["batch"]) for item in schedule}, reverse=True):
+    # flowchart TB does not stack sibling subgraphs on its own, so chain them
+    # with invisible links to render batches top to bottom in ascending order.
+    batches = sorted({int(item["batch"]) for item in schedule})
+    for batch in batches:
         batch_items = [item for item in schedule if int(item["batch"]) == batch]
         ranks = sorted(
             {int(item["src"]) for item in batch_items}
@@ -518,6 +685,8 @@ def build_after_mermaid_diagram(schedule: list[dict[str, Any]]) -> str:
             lines.append(f'      {src_node} -->|"{label}"| {dst_node}')
         lines.append("    end")
         lines.append(f"    class BA{batch} batch")
+    for first, second in zip(batches, batches[1:]):
+        lines.append(f"    BA{first} ~~~ BA{second}")
     lines.append("  end")
     return "\n".join(lines) + "\n"
 
@@ -549,14 +718,24 @@ def build_link_mermaid_diagram(
     endpoint_ranks = {inst.src_rank for inst in instructions} | {
         inst.dst_rank for inst in instructions
     }
-    ranks = sorted({link.src_rank for link in network.links} | {
-        link.dst_rank for link in network.links
-    })
+    ecmp_link_fractions = compute_ecmp_link_fractions(instructions, network)
+    used_vertices = set(endpoint_ranks)
+    for fractions in ecmp_link_fractions.values():
+        for link in fractions:
+            used_vertices.add(link[0])
+            used_vertices.add(link[1])
+    ranks = sorted(
+        rank
+        for rank in {link.src_rank for link in network.links}
+        | {link.dst_rank for link in network.links}
+        if rank in used_vertices
+    )
     max_loads = _max_link_loads(
         schedule,
-        compute_ecmp_link_fractions(instructions, network),
+        ecmp_link_fractions,
     )
-    capacities = _link_capacities(network)
+    capacities = _effective_capacities(network)
+    roles = network.vertex_roles or {}
     lines = [
         "flowchart LR",
         "  classDef gpu fill:#e9fff5,stroke:#23734d,stroke-width:2px;",
@@ -566,13 +745,22 @@ def build_link_mermaid_diagram(
     ]
     for rank in ranks:
         node = _mermaid_id("link", rank)
-        role = "GPU rank" if rank in endpoint_ranks else "NVSwitch/fabric"
-        lines.append(f'    {node}["{role} {rank}"]')
-        node_class = "gpu" if rank in endpoint_ranks else "fabric"
+        if rank in endpoint_ranks:
+            role = f"GPU rank {rank}"
+            node_class = "gpu"
+        else:
+            role = f"{roles.get(rank, 'Fabric switch')} ({rank})"
+            node_class = "fabric"
+        lines.append(f'    {node}["{role}"]')
         lines.append(f"    class {node} {node_class}")
     edge = "-->" if network.directed else "---"
     hot_edges: list[int] = []
-    for edge_idx, link in enumerate(network.links):
+    drawn_links = [
+        link
+        for link in network.links
+        if link.src_rank in used_vertices and link.dst_rank in used_vertices
+    ]
+    for edge_idx, link in enumerate(drawn_links):
         src_node = _mermaid_id("link", link.src_rank)
         dst_node = _mermaid_id("link", link.dst_rank)
         directions = [(link.src_rank, link.dst_rank)]
