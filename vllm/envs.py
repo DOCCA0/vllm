@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     CUDA_VISIBLE_DEVICES: str | None = None
     VLLM_ENGINE_ITERATION_TIMEOUT_S: int = 60
     VLLM_ENGINE_READY_TIMEOUT_S: int = 600
+    VLLM_EPLB_LOG_MIGRATION_STATS: bool = False
     VLLM_API_KEY: str | None = None
     VLLM_DEBUG_LOG_API_SERVER_RESPONSE: bool = False
     S3_ACCESS_KEY_ID: str | None = None
@@ -644,6 +645,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # during startup. Default is 600 seconds (10 minutes).
     "VLLM_ENGINE_READY_TIMEOUT_S": lambda: int(
         os.environ.get("VLLM_ENGINE_READY_TIMEOUT_S", "600")
+    ),
+    # If set, log per-rank EPLB migration transfer stats (hot spot
+    # indicator) on EP rank 0 for every rearranged layer.
+    "VLLM_EPLB_LOG_MIGRATION_STATS": lambda: (
+        os.environ.get("VLLM_EPLB_LOG_MIGRATION_STATS", "0").lower() in ("1", "true")
     ),
     # API key for vLLM API server
     "VLLM_API_KEY": lambda: os.environ.get("VLLM_API_KEY", None),

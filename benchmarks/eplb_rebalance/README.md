@@ -1,56 +1,72 @@
 # EPLB Migration Batching Benchmark
 
 Benchmark for the migration batching feature (see `feature.md`):
-baseline (`off`) vs `first_fit` vs `degree_desc`, measuring rebalance
-duration and inference tail latency.
+baseline (`off`) vs `first_fit` vs `degree_desc`. Scripts are numbered in
+workflow order:
 
-## Single Node (WSL smoke test)
+| script | purpose | where |
+|---|---|---|
+| `01_setup.sh` | venv + vllm + model download | every node |
+| `02_firewall.sh` | allow VLAN traffic between nodes | laptop |
+| `03_cluster_up.sh` | start/stop the 4-node Ray cluster | laptop |
+| `04_run.sh` | one experiment group (serve -> skew -> bench -> collect) | head node / WSL |
+| `05_all.sh` | 3-group comparison + report | head node |
+| `06_report.py` | aggregate `results/` into table + `summary.csv` | anywhere |
+| `nic_sampler.sh` | NIC throughput sampler (invoked remotely by `04_run.sh`) | helper |
 
-Validates the server/traffic/report pipeline on one GPU with the small
-MoE model. EPLB is off (it requires TP*DP>1), so this only smoke-tests
-the tooling.
+## Single Node (laptop / WSL smoke test)
 
-```bash
-bash benchmarks/eplb_rebalance/bench_setup.sh     # venv + vllm
-
-# On a small GPU (e.g. 8GB WSL), use a tiny random MoE (Qwen1.5-MoE is
-# 14.3B total params and does not fit):
-MODE=single MODEL=tiny-random/qwen3-moe bash benchmarks/eplb_rebalance/bench_run.sh
-```
-
-Results in `benchmarks/eplb_rebalance/results/single_*/` (`server.log`,
-`bench.json`, `bench_main.log`). Inspect with:
+One GPU, small MoE, EPLB off (it requires TP*DP>1). Only smoke-tests the
+server/traffic/report pipeline:
 
 ```bash
-.venv/bin/python benchmarks/eplb_rebalance/bench_report.py
+bash 01_setup.sh    # venv + vllm + tiny-random/qwen3-moe
+bash 04_run.sh      # MODE=single by default, ~10 min
+./06_report.py
 ```
 
 ## Multi Node (4-node VLAN cluster)
 
-Four nodes, one GPU each, TP=4 + expert parallel over TCP Ethernet
-(every cross-GPU transfer goes through the NIC). All scripts run on the
-**head node** unless noted.
+Four nodes, one GPU each, TP=4 + expert parallel (`--enable-expert-parallel`,
+so the EPLB group is EP=4) over TCP Ethernet: every cross-GPU transfer goes
+through the NIC. Update `NODES` in `02_firewall.sh` / `03_cluster_up.sh` /
+`04_run.sh` (or export `CLUSTER_NODES`) when the lease changes.
 
 ```bash
-# 0. On EVERY node: install env + model, allow VLAN traffic
-bash benchmarks/eplb_rebalance/bench_setup.sh
-./benchmarks/eplb_rebalance/bootstrap.sh <FLOAT_IP>          # firewall (any node)
+# 0. On EVERY node:
+bash 01_setup.sh
 
-# 1. Update NODES in cluster_up.sh, check the VLAN iface name
-ip -br addr                                       # e.g. IFACE=enp1s0f1
+# 1. From the laptop:
+bash 02_firewall.sh <FLOAT_IP>
+IFACE=<iface> bash 03_cluster_up.sh <FLOAT_IP>     # `... <FLOAT_IP> down` to stop
 
-# 2. Start the Ray cluster
-./benchmarks/eplb_rebalance/cluster_up.sh <FLOAT_IP>         # `down` to tear down
-
-# 3. Smoke test with the small model, then run the real benchmark
-MODE=cluster IFACE=<iface> bash benchmarks/eplb_rebalance/bench_all.sh
+# 2. On the head node (check iface name with `ip -br addr` first):
+MODE=cluster IFACE=<iface> bash 05_all.sh          # small-model smoke
 MODE=cluster IFACE=<iface> MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507 \
-  NUM_REDUNDANT=32 bash benchmarks/eplb_rebalance/bench_all.sh
+  NUM_REDUNDANT=32 bash 05_all.sh                  # 30B live run
 ```
 
-`bench_all.sh` runs three groups (`off` / `first_fit` / `degree_desc`)
-and prints a comparison table; per-group logs land in
-`results/multi_<policy>_<model>/`, aggregate in `results/summary.csv`.
+`05_all.sh` runs three groups (`off` / `first_fit` / `degree_desc`) and
+prints a comparison table; per-group logs land in
+`results/multi_<policy>_<model>/`, the aggregate in `results/summary.csv`.
+
+## Hot-spot construction and metrics
+
+- **Hot GPU**: phase A of `04_run.sh` sends requests with a ~98% shared
+  prefix (`PREFIX_LEN` + `SKEW_INPUT_LEN`), concentrating token routing on a
+  few experts per layer. After rearrangement, the ranks holding those
+  experts become migration hot spots.
+- **Per-rank stats**: `04_run.sh` sets `VLLM_EPLB_LOG_MIGRATION_STATS=1` in
+  cluster mode, so `server.log` contains one line per layer per rebalance:
+  `EPLB migration stats: N transfers, B batches, per-rank peak=.. hotspot_ratio=..`
+  (peak/mean across ranks; 1.0 = perfectly balanced).
+- **NIC throughput**: with `IFACE` set, `04_run.sh` samples
+  `/sys/class/net/<iface>/statistics` on every node and stores
+  `nic_<ip>.txt` (rx/tx MB/s) per group; the report shows the peak.
+- **Before/after**: compare `rearrange_mean/p95_s`, `hotspot_max`,
+  `nic_peak_MBps` and `p99_tpot_ms` across the three groups.
+- **ILP lower bound**: `ILP/eplb_migration_ilp.py` solves the optimal
+  batching offline for comparison with the greedy schedules.
 
 Key knobs (env vars): `EPLB_STEP`, `EPLB_WINDOW`, `NUM_REDUNDANT`,
-`NUM_PROMPTS`, `CONCURRENCY`, `PREFIX_LEN`. See `bench_run.sh` header.
+`NUM_PROMPTS`, `CONCURRENCY`, `PREFIX_LEN`, `SKEW_INPUT_LEN`.

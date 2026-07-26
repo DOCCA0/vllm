@@ -102,6 +102,23 @@ def build_migration_instructions(
     return instructions
 
 
+def per_rank_transfer_counts(
+    instructions: list[MigrationInstruction],
+    world_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Count per-rank send and receive transfers.
+
+    Returns:
+        ``(send_counts, recv_counts)``, each of shape ``(world_size,)``.
+    """
+    send = np.zeros(world_size, dtype=np.int64)
+    recv = np.zeros(world_size, dtype=np.int64)
+    for inst in instructions:
+        send[inst.src_rank] += 1
+        recv[inst.dst_rank] += 1
+    return send, recv
+
+
 def schedule_migrations_greedy(
     instructions: list[MigrationInstruction],
     order: MigrationOrder = "degree_desc",

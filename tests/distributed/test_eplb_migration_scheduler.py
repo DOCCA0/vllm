@@ -10,6 +10,7 @@ from vllm.distributed.eplb.eplb_communicator import EplbCommunicator
 from vllm.distributed.eplb.migration_scheduler import (
     MigrationInstruction,
     build_migration_instructions,
+    per_rank_transfer_counts,
     schedule_migrations_greedy,
 )
 from vllm.distributed.eplb.rebalance_execute import move_to_buffer
@@ -52,9 +53,7 @@ def test_migration_batching_policies():
         MigrationInstruction(0, 4, expert=5),
     ]
 
-    first_fit_batches = schedule_migrations_greedy(
-        instructions, order="first_fit"
-    )
+    first_fit_batches = schedule_migrations_greedy(instructions, order="first_fit")
     # first_fit starts with the two disjoint edges, leaving only one slot per
     # batch for a rank-0 edge, so the (0,4) edge ends up in a 5th batch.
     assert len(first_fit_batches) == 5
@@ -66,9 +65,7 @@ def test_migration_batching_policies():
     for batch in first_fit_batches:
         _assert_no_endpoint_conflict(batch)
 
-    degree_desc_batches = schedule_migrations_greedy(
-        instructions, order="degree_desc"
-    )
+    degree_desc_batches = schedule_migrations_greedy(instructions, order="degree_desc")
     # degree_desc processes the rank-0 edges first, filling the leftover slots
     # with the disjoint edges. This reaches the lower bound of 4 batches.
     assert len(degree_desc_batches) == 4
@@ -129,6 +126,28 @@ def test_build_migration_instructions_empty():
     old = np.array([-1, -1, -1, -1], dtype=np.int64)
     new = np.array([-1, -1, -1, -1], dtype=np.int64)
     assert build_migration_instructions(2, old, new) == []
+
+
+def test_per_rank_transfer_counts():
+    instructions = [
+        MigrationInstruction(0, 1, expert=0),
+        MigrationInstruction(0, 2, expert=1),
+        MigrationInstruction(0, 3, expert=2),
+        MigrationInstruction(1, 2, expert=3),
+    ]
+    send, recv = per_rank_transfer_counts(instructions, world_size=4)
+    assert send.tolist() == [3, 1, 0, 0]
+    assert recv.tolist() == [0, 1, 2, 1]
+    total = send + recv
+    # Rank 0 participates in 3 of 4 transfers: clear hot spot.
+    assert total.max() == 3
+    assert total.sum() == 2 * len(instructions)
+
+
+def test_per_rank_transfer_counts_empty():
+    send, recv = per_rank_transfer_counts([], world_size=3)
+    assert send.tolist() == [0, 0, 0]
+    assert recv.tolist() == [0, 0, 0]
 
 
 def test_move_to_buffer_batched():

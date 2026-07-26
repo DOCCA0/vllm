@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from torch.distributed import ProcessGroup, all_gather
 
+import vllm.envs as envs
 from vllm.logger import init_logger
 
 from .eplb_communicator import EplbCommunicator
@@ -20,10 +21,39 @@ from .migration_scheduler import (
     MigrationInstruction,
     MigrationOrder,
     build_migration_instructions,
+    per_rank_transfer_counts,
     schedule_migrations_greedy,
 )
 
 logger = init_logger(__name__)
+
+
+def _log_migration_stats(
+    instructions: list[MigrationInstruction],
+    world_size: int,
+    num_batches: int,
+    ep_rank: int,
+) -> None:
+    """Log per-rank transfer counts (hot spot indicator) on EP rank 0.
+
+    Gated behind VLLM_EPLB_LOG_MIGRATION_STATS. ``instructions`` is identical
+    on every rank since the expert maps are replicated.
+    """
+    if ep_rank != 0 or not instructions:
+        return
+    send, recv = per_rank_transfer_counts(instructions, world_size)
+    total = send + recv
+    mean = float(total.mean())
+    peak = int(total.max())
+    logger.info(
+        "EPLB migration stats: %d transfers, %d batches, "
+        "per-rank peak=%d mean=%.1f hotspot_ratio=%.2f",
+        len(instructions),
+        num_batches,
+        peak,
+        mean,
+        peak / mean if mean > 0 else 1.0,
+    )
 
 
 @dataclass
@@ -360,6 +390,16 @@ def move_to_buffer(
 
         # 4. Execute the P2P operations. The real communication happens here.
         communicator.execute()
+        if envs.VLLM_EPLB_LOG_MIGRATION_STATS and do_remote:
+            instructions = build_migration_instructions(
+                num_local_experts, old_indices, new_indices
+            )
+            _log_migration_stats(
+                instructions,
+                old_indices.shape[0] // num_local_experts,
+                num_batches=1,
+                ep_rank=ep_rank,
+            )
     else:
         instructions = build_migration_instructions(
             num_local_experts, old_indices, new_indices
@@ -367,6 +407,13 @@ def move_to_buffer(
         batches = schedule_migrations_greedy(
             instructions, order=migration_batching_policy
         )
+        if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
+            _log_migration_stats(
+                instructions,
+                old_indices.shape[0] // num_local_experts,
+                num_batches=len(batches),
+                ep_rank=ep_rank,
+            )
 
         if (
             migration_batching_max_batches is not None
