@@ -2,10 +2,11 @@
 # 03 - Start/stop the 4-node Ray cluster (run from the laptop, via jump host;
 # one GPU per node)
 # Prerequisites: 01_setup.sh on every node; 02_firewall.sh done
-# Usage: IFACE=<vlan_iface> bash 03_cluster_up.sh <FLOAT_IP> [down]
+# Usage: CLUSTER_NODES="ip1 ip2 ..." IFACE=<vlan_iface> bash 03_cluster_up.sh <FLOAT_IP> [down]
 FLOAT=$1
 ACTION=${2:-up}
-NODES=(${CLUSTER_NODES:-10.31.0.243 10.31.0.244 10.31.0.247 10.31.0.249})   # keep in sync with 02
+[ -z "${CLUSTER_NODES:-}" ] && { echo "error: CLUSTER_NODES is required (space-separated node IPs)" >&2; exit 1; }
+NODES=($CLUSTER_NODES)
 HEAD=${NODES[0]}
 REPO_DIR=${REPO_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}   # must be identical on every node
 RAY_PORT=6379

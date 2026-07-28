@@ -5,9 +5,9 @@
 #   WSL single-GPU smoke (EPLB off, pipeline validation only):
 #     bash 04_run.sh
 #   Cluster smoke with the small model (run 03_cluster_up.sh first):
-#     MODE=cluster IFACE=<iface> BATCHING=degree_desc bash 04_run.sh
+#     MODE=cluster CLUSTER_NODES="ip1 ip2 ..." IFACE=<iface> BATCHING=degree_desc bash 04_run.sh
 #   Live 30B benchmark:
-#     MODE=cluster IFACE=<iface> MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507 \
+#     MODE=cluster CLUSTER_NODES="ip1 ip2 ..." IFACE=<iface> MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507 \
 #       NUM_REDUNDANT=32 BATCHING=degree_desc bash 04_run.sh
 set -uo pipefail
 cd "$(dirname "$0")/../.."   # repo root
@@ -33,7 +33,10 @@ OUTPUT_LEN=${OUTPUT_LEN:-128}
 PREFIX_LEN=${PREFIX_LEN:-384}     # shared prefix -> routing hot spot
 SKEW_INPUT_LEN=${SKEW_INPUT_LEN:-8}   # phase A: ~98% shared tokens
 READY_TIMEOUT=${READY_TIMEOUT:-1800}
-NODES=(${CLUSTER_NODES:-10.31.0.243 10.31.0.244 10.31.0.247 10.31.0.249})
+if [[ $MODE == cluster ]]; then
+  [ -z "${CLUSTER_NODES:-}" ] && { echo "error: CLUSTER_NODES is required in cluster mode (space-separated node IPs)" >&2; exit 1; }
+  NODES=($CLUSTER_NODES)
+fi
 REPO_DIR=${REPO_DIR:-$REPO_ROOT}
 
 # Mode-dependent defaults
