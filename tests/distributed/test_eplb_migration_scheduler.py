@@ -77,6 +77,19 @@ def test_migration_batching_policies():
         _assert_no_endpoint_conflict(batch)
 
 
+def test_migration_batching_coalesces_same_rank_pair():
+    instructions = [
+        MigrationInstruction(0, 1, expert=0),
+        MigrationInstruction(0, 1, expert=1),
+        MigrationInstruction(2, 3, expert=2),
+    ]
+
+    for policy in ("first_fit", "degree_desc"):
+        batches = schedule_migrations_greedy(instructions, order=policy)
+        assert len(batches) == 1
+        assert batches[0] == instructions
+
+
 def test_build_migration_instructions_excludes_local_copies():
     # 2 ranks, 2 local experts. Old: rank0 [0,1], rank1 [1,2].
     # New:  rank0 [0,1], rank1 [0,2]. Only rank1 needs expert 0 and rank0 can send it.
@@ -188,11 +201,12 @@ def _as_endpoints(instructions):
 
 def _assert_no_endpoint_conflict(batch):
     used = set()
-    for inst in batch:
-        assert inst.src_rank not in used, f"src {inst.src_rank} reused"
-        assert inst.dst_rank not in used, f"dst {inst.dst_rank} reused"
-        used.add(inst.src_rank)
-        used.add(inst.dst_rank)
+    pairs = {(inst.src_rank, inst.dst_rank) for inst in batch}
+    for src_rank, dst_rank in pairs:
+        assert src_rank not in used, f"src {src_rank} reused"
+        assert dst_rank not in used, f"dst {dst_rank} reused"
+        used.add(src_rank)
+        used.add(dst_rank)
 
 
 def test_move_to_buffer_max_batches_warning():

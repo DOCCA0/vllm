@@ -45,10 +45,12 @@ def _log_migration_stats(
     total = send + recv
     mean = float(total.mean())
     peak = int(total.max())
+    num_flows = len({(inst.src_rank, inst.dst_rank) for inst in instructions})
     logger.info(
-        "EPLB migration stats: %d transfers, %d batches, "
+        "EPLB migration stats: %d transfers, %d flows, %d batches, "
         "per-rank peak=%d mean=%.1f hotspot_ratio=%.2f",
         len(instructions),
+        num_flows,
         num_batches,
         peak,
         mean,
@@ -191,7 +193,7 @@ def _execute_migration_batch(
     expert_weights_buffers: Sequence[torch.Tensor],
     communicator: EplbCommunicator,
 ) -> None:
-    """Post one wave of conflict-free P2P expert transfers and wait."""
+    """Post one wave of conflict-free rank-pair flows and wait."""
     for inst in batch:
         if inst.src_rank == ep_rank:
             base = ep_rank * num_local_experts
@@ -224,6 +226,7 @@ def move_to_buffer(
     cuda_stream: torch.cuda.Stream | None,
     ep_rank: int,
     communicator: EplbCommunicator,
+    is_profile: bool = False,
     migration_batching: bool = False,
     migration_batching_policy: MigrationOrder = "degree_desc",
     migration_batching_max_batches: int | None = None,
@@ -242,6 +245,7 @@ def move_to_buffer(
         cuda_stream: CUDA stream for async copies (can be None for sync mode).
         ep_rank: Rank of this process in expert parallel group.
         communicator: EplbCommunicator instance for P2P communication.
+        is_profile: Whether this is the startup profile rearrangement.
         migration_batching: If True, schedule remote P2P transfers into
             conflict-free batches instead of launching them all at once.
         migration_batching_policy: Greedy ordering policy for batching.
@@ -390,7 +394,7 @@ def move_to_buffer(
 
         # 4. Execute the P2P operations. The real communication happens here.
         communicator.execute()
-        if envs.VLLM_EPLB_LOG_MIGRATION_STATS and do_remote:
+        if envs.VLLM_EPLB_LOG_MIGRATION_STATS and do_remote and not is_profile:
             instructions = build_migration_instructions(
                 num_local_experts, old_indices, new_indices
             )
@@ -407,7 +411,7 @@ def move_to_buffer(
         batches = schedule_migrations_greedy(
             instructions, order=migration_batching_policy
         )
-        if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
+        if envs.VLLM_EPLB_LOG_MIGRATION_STATS and not is_profile:
             _log_migration_stats(
                 instructions,
                 old_indices.shape[0] // num_local_experts,
@@ -618,6 +622,7 @@ async def transfer_layer(
         cuda_stream=cuda_stream,
         ep_rank=ep_group.rank(),
         communicator=communicator,
+        is_profile=is_profile,
         migration_batching=migration_batching,
         migration_batching_policy=migration_batching_policy,
         migration_batching_max_batches=migration_batching_max_batches,
@@ -725,6 +730,7 @@ def rearrange_expert_weights_inplace(
             cuda_stream=None,
             ep_rank=ep_rank,
             communicator=communicator,
+            is_profile=is_profile,
             migration_batching=migration_batching,
             migration_batching_policy=migration_batching_policy,
             migration_batching_max_batches=migration_batching_max_batches,

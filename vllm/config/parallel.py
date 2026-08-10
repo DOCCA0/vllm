@@ -98,9 +98,10 @@ class EPLBConfig:
     use_migration_batching: bool = False
     """
     If True, schedule remote expert weight transfers during EPLB rebalancing
-    into waves (batches) where no rank participates as both sender and
-    receiver or in more than one transfer at a time. This can reduce NIC/RDMA
-    hot spots at the cost of more synchronous P2P steps.
+    into waves (batches) where no rank participates in more than one distinct
+    rank-pair flow at a time. Multiple expert transfers between the same source
+    and destination are coalesced into one flow. This can reduce NIC/RDMA hot
+    spots at the cost of more synchronous P2P steps.
     """
 
     migration_batching_policy: EPLBMigrationBatchingOrder = "degree_desc"

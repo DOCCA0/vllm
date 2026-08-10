@@ -4,8 +4,10 @@
 
 The scheduler takes a set of remote expert weight transfers (directed edges
 ``src_rank -> dst_rank``) and groups them into batches where no rank participates
-in more than one transfer at a time. This reduces per-rank NIC/RDMA hot spots
-without changing the final expert placement.
+in more than one rank-pair flow at a time. Transfers between the same source and
+destination are coalesced into one flow so that multiple experts can share one
+communicator execution. This reduces per-rank NIC/RDMA hot spots without
+serializing every expert tensor individually.
 
 The algorithms are intentionally simple (online greedy) so that they can run on
 every EPLB rank using only the replicated global expert indices. The offline
@@ -125,9 +127,12 @@ def schedule_migrations_greedy(
 ) -> list[list[MigrationInstruction]]:
     """Group migration instructions into conflict-free batches.
 
-    A batch is conflict-free when no rank appears as the source or destination
-    of more than one instruction. This is equivalent to a greedy edge coloring
-    of the migration multigraph.
+    Instructions with the same directed ``(src_rank, dst_rank)`` pair are first
+    coalesced into one flow. A batch is conflict-free when no rank appears in
+    more than one distinct flow. All instructions in a flow remain in the same
+    batch and are submitted in one communicator execution. Scheduling the
+    coalesced flows is equivalent to a greedy edge coloring of the rank-pair
+    graph.
 
     Two ordering policies are supported:
 
@@ -137,7 +142,8 @@ def schedule_migrations_greedy(
       first. This usually yields fewer batches and is the default.
 
     Args:
-        instructions: Remote migration instructions to schedule.
+        instructions: Remote migration instructions to schedule. Instructions
+            for the same directed rank pair are kept together.
         order: Greedy ordering policy.
 
     Returns:
@@ -147,41 +153,49 @@ def schedule_migrations_greedy(
     if not instructions:
         return []
 
+    flows_by_pair: dict[tuple[int, int], list[MigrationInstruction]] = {}
+    for instruction in instructions:
+        flows_by_pair.setdefault(
+            (instruction.src_rank, instruction.dst_rank), []
+        ).append(instruction)
+    flows = list(flows_by_pair.values())
+
     if order == "degree_desc":
         degree = collections.Counter[int]()
         for inst in instructions:
             degree[inst.src_rank] += 1
             degree[inst.dst_rank] += 1
 
-        ordered = sorted(
-            instructions,
-            key=lambda inst: (
-                -degree[inst.src_rank] - degree[inst.dst_rank],
-                -degree[inst.src_rank],
-                -degree[inst.dst_rank],
-                inst.src_rank,
-                inst.dst_rank,
-                inst.expert,
+        ordered_flows = sorted(
+            flows,
+            key=lambda flow: (
+                -degree[flow[0].src_rank] - degree[flow[0].dst_rank],
+                -degree[flow[0].src_rank],
+                -degree[flow[0].dst_rank],
+                flow[0].src_rank,
+                flow[0].dst_rank,
             ),
         )
     else:
-        ordered = list(instructions)
+        ordered_flows = flows
 
     batches: list[list[MigrationInstruction]] = []
     endpoints_used: list[set[int]] = []
 
-    for inst in ordered:
+    for flow in ordered_flows:
+        src_rank = flow[0].src_rank
+        dst_rank = flow[0].dst_rank
         placed = False
         for batch_idx, used in enumerate(endpoints_used):
-            if inst.src_rank not in used and inst.dst_rank not in used:
-                batches[batch_idx].append(inst)
-                used.add(inst.src_rank)
-                used.add(inst.dst_rank)
+            if src_rank not in used and dst_rank not in used:
+                batches[batch_idx].extend(flow)
+                used.add(src_rank)
+                used.add(dst_rank)
                 placed = True
                 break
         if not placed:
-            batches.append([inst])
-            endpoints_used.append({inst.src_rank, inst.dst_rank})
+            batches.append(list(flow))
+            endpoints_used.append({src_rank, dst_rank})
 
     return batches
 

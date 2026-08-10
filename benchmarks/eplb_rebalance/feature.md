@@ -10,10 +10,11 @@ creates NIC/RDMA hot spots, increasing tail latency of the rebalance step.
 ## Feature
 
 This change adds optional **migration batching**: remote transfers are grouped
-into sequential waves (batches) where no rank acts as sender or receiver in
-more than one transfer at a time. Within a wave, all transfers run
-concurrently; between waves there is a synchronization point. This spreads
-network load over time without changing the final expert placement.
+into sequential waves (batches) where no rank participates in more than one
+distinct rank-pair flow at a time. Expert transfers with the same source and
+destination are coalesced into one flow and submitted together. Within a wave,
+all flows run concurrently; between waves there is a synchronization point.
+This spreads network load over time without serializing every expert tensor.
 
 Scheduling is done with a lightweight online **greedy edge coloring** of the
 migration graph (ranks = vertices, transfers = directed edges). Two ordering
