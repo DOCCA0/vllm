@@ -73,9 +73,8 @@ export NCCL_SOCKET_IFNAME=eno1np0 GLOO_SOCKET_IFNAME=eno1np0
 export VLLM_EPLB_LOG_MIGRATION_STATS=1
 
 MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
-RESULTS=$HOME/benchmarks/eplb_rebalance/$TAG
-BENCH_RESULTS=$HOME/benchmarks/eplb_current_groups
-mkdir -p "$RESULTS" "$BENCH_RESULTS"
+RESULTS=$HOME/benchmarks/eplb_200/$TAG
+mkdir -p "$RESULTS"
 
 EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":$USE_ASYNC,\"enable_migration_batching\":$USE_BATCHING}"
 
@@ -98,6 +97,12 @@ curl -sf http://127.0.0.1:8000/v1/completions \
   -d "{\"model\":\"$MODEL\",\"prompt\":\"warm up\",\"max_tokens\":10}" \
   > "$RESULTS/warmup.json"
 
+while kill -0 "$SERVER_PID"; do
+  echo "$(date +%s) $(cat /sys/class/net/eno1np0/statistics/{rx_bytes,tx_bytes} | xargs)"
+  sleep 1
+done > "$RESULTS/nic.tsv" &
+NIC_PID=$!
+
 vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
   --dataset-name random --random-prefix-len 300 \
   --random-input-len 200 --random-output-len 100 \
@@ -105,29 +110,32 @@ vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
   --percentile-metrics ttft,tpot,e2el \
   --metric-percentiles 50,90,95,99 --ignore-eos --disable-tqdm \
   --save-result --result-dir "$RESULTS" --result-filename bench.json \
-  > "$BENCH_RESULTS/$TAG.log" 2>&1
+  > "$RESULTS/bench.log" 2>&1
 
-kill "$SERVER_PID"
+kill "$NIC_PID" "$SERVER_PID"
 ```
 
 依次运行四组，不需要单独的 `main` 对照组。
 
-## 4. 旧实验结果
+## 4. 200 prompts 结果
 
-以下结果使用 100 prompts；新的 200 prompts 结果需重新生成。
+四组均为 200 成功、0 失败。NIC 是 head `eno1np0` 每秒 RX+TX。
 
-| 模式 | 策略 | batches | 耗时 (s) | 输出 (tok/s) | E2EL P99 (ms) |
-| --- | --- | ---: | ---: | ---: | ---: |
-| sync | off | 1 | 851.44 | 11.74 | 409,266.36 |
-| sync | batching on | 6 | 897.57 | 11.14 | 426,808.06 |
-| async | off | 1 | 808.73 | 12.37 | 394,209.66 |
-| async | batching on | 6 | 789.28 | 12.67 | 388,450.76 |
+| 模式 | batching | batches | 耗时 (s) | 输出 (tok/s) | E2EL P99 (ms) | NIC P99 (MB/s) | NIC 峰值 (MB/s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| sync | false | 1 | 1576.63 | 12.69 | 387,329.45 | 1788.94 | 2026.04 |
+| sync | true | 6 | 1638.30 | 12.21 | 408,886.74 | 1165.15 | 1258.95 |
+| async | false | 1 | 1504.01 | 13.30 | 382,019.25 | 1030.35 | 1113.71 |
+| async | true | 6 | 1480.46 | 13.51 | 378,654.89 | 855.10 | 940.19 |
+
+同步开启分批会增加串行迁移耗时，但 NIC P99 降低 34.9%。异步开启分批时，
+NIC P99 降低 17.0%，输出吞吐提高 1.6%，E2EL P99 降低 0.9%。
 
 `batches` 不是配置值。调度器根据每层迁移图动态计算；这次 12 条 flows
 恰好得到 6 batches。未分批组记为 1 batch。
 
 ```bash
-ls -1 "$BENCH_RESULTS"/*.log
-cat "$BENCH_RESULTS/$TAG.log"
+ls -1 "$HOME/benchmarks/eplb_200"/*/bench.log
+cat "$RESULTS/bench.log"
 grep -E "EPLB migration stats|Rearranged experts" "$RESULTS/server.log"
 ```
