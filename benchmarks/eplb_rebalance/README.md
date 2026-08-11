@@ -1,8 +1,8 @@
-# 四节点 EPLB 迁移分批实验
+# Four-Node EPLB Migration Batching Experiment
 
-## 1. 拉取代码
+## 1. Pull the Code
 
-在 Windows 终端依次执行：
+Run the following commands sequentially in a Windows terminal:
 
 ```bash
 ssh -J cc@192.5.86.236 cc@10.140.83.156 "cd ~/vllm && git switch ilp && git pull --ff-only origin ilp"
@@ -11,9 +11,9 @@ ssh -J cc@192.5.86.236 cc@10.140.83.28  "cd ~/vllm && git switch ilp && git pull
 ssh -J cc@192.5.86.236 cc@10.140.83.94  "cd ~/vllm && git switch ilp && git pull --ff-only origin ilp"
 ```
 
-## 2. 启动 Ray
+## 2. Start Ray
 
-四台机器都先执行：
+Run the following commands on all four machines first:
 
 ```bash
 cd ~/vllm
@@ -23,47 +23,47 @@ export NCCL_SOCKET_IFNAME=eno1np0 GLOO_SOCKET_IFNAME=eno1np0
 ray stop --force
 ```
 
-head `10.140.83.156` 执行：
+Run the following command on the head node, `10.140.83.156`:
 
 ```bash
 ray start --head --port=6379 --disable-usage-stats
 ```
 
-其余三台执行：
+Run the following command on the other three machines:
 
 ```bash
 ray start --address=10.140.83.156:6379 --disable-usage-stats
 ```
 
-head 上运行 `ray status`，应看到 4 个节点和 4 张 GPU。
+Run `ray status` on the head node. You should see four nodes and four GPUs.
 
-## 3. 运行一组实验
+## 3. Run an Experiment
 
-每组都重新启动服务。四组选一组：
+Restart the service for each experiment. Choose one of the following four configurations:
 
 ```bash
-# 同步、不分批
+# Synchronous, without batching
 TAG=01_sync_off
 USE_ASYNC=false
 USE_BATCHING=false
 
-# 同步、开启迁移分批
-# TAG=02_sync_batching_on
-# USE_ASYNC=false
-# USE_BATCHING=true
+# Synchronous, with migration batching enabled
+TAG=02_sync_batching_on
+USE_ASYNC=false
+USE_BATCHING=true
 
-# 异步、不分批
-# TAG=03_async_off
-# USE_ASYNC=true
-# USE_BATCHING=false
+# Asynchronous, without batching
+TAG=03_async_off
+USE_ASYNC=true
+USE_BATCHING=false
 
-# 异步、开启迁移分批
-# TAG=04_async_batching_on
-# USE_ASYNC=true
-# USE_BATCHING=true
+# Asynchronous, with migration batching enabled
+TAG=04_async_batching_on
+USE_ASYNC=true
+USE_BATCHING=true
 ```
 
-启动服务：
+Start the service:
 
 ```bash
 cd ~/vllm
@@ -89,7 +89,7 @@ SERVER_PID=$!
 until curl -sf http://127.0.0.1:8000/health >/dev/null; do sleep 5; done
 ```
 
-预热并压测：
+Warm up the service and run the benchmark:
 
 ```bash
 curl -sf http://127.0.0.1:8000/v1/completions \
@@ -115,24 +115,22 @@ vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
 kill "$NIC_PID" "$SERVER_PID"
 ```
 
-依次运行四组，不需要单独的 `main` 对照组。
+Run all four configurations sequentially. No separate `main` baseline is needed.
 
-## 4. 200 prompts 结果
+## 4. Results for 200 Prompts
 
-四组均为 200 成功、0 失败。NIC 是 head `eno1np0` 每秒 RX+TX。
+All four configurations completed 200 requests successfully with zero failures. NIC traffic is the per-second RX+TX traffic on the head node's `eno1np0` interface.
 
-| 模式 | batching | batches | 耗时 (s) | 输出 (tok/s) | E2EL P99 (ms) | NIC P99 (MB/s) | NIC 峰值 (MB/s) |
+| Mode | batching | batches | Duration (s) | Output (tok/s) | E2EL P99 (ms) | NIC P99 (MB/s) | NIC Peak (MB/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | sync | false | 1 | 1576.63 | 12.69 | 387,329.45 | 1788.94 | 2026.04 |
 | sync | true | 6 | 1638.30 | 12.21 | 408,886.74 | 1165.15 | 1258.95 |
 | async | false | 1 | 1504.01 | 13.30 | 382,019.25 | 1030.35 | 1113.71 |
 | async | true | 6 | 1480.46 | 13.51 | 378,654.89 | 855.10 | 940.19 |
 
-同步开启分批会增加串行迁移耗时，但 NIC P99 降低 34.9%。异步开启分批时，
-NIC P99 降低 17.0%，输出吞吐提高 1.6%，E2EL P99 降低 0.9%。
+Enabling batching for synchronous migration increases the serialized migration time, but reduces NIC P99 by 34.9%. With asynchronous migration, enabling batching reduces NIC P99 by 17.0%, increases output throughput by 1.6%, and reduces E2EL P99 by 0.9%.
 
-`batches` 不是配置值。调度器根据每层迁移图动态计算；这次 12 条 flows
-恰好得到 6 batches。未分批组记为 1 batch。
+`batches` is not a configuration value. The scheduler calculates it dynamically from the migration graph for each layer. In this experiment, 12 flows resulted in exactly 6 batches. Configurations without batching are recorded as having 1 batch.
 
 ```bash
 ls -1 "$HOME/benchmarks/eplb_200"/*/bench.log
