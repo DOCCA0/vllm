@@ -39,16 +39,44 @@ head 上运行 `ray status`，应看到 4 个节点和 4 张 GPU。
 
 ## 3. 运行一组实验
 
-每组都重新启动服务。先选一组：
+每组都重新启动服务。六组选一组：
 
 ```bash
-# 异步、不分批（对照组）
-TAG=async_off
+# 同步、不分批
+TAG=01_sync_off
+USE_ASYNC=false
 USE_BATCHING=false
+POLICY=first_fit
 
-# 异步、degree_desc（实验组）
-# TAG=async_degree_desc
+# 同步、first_fit
+# TAG=02_sync_first_fit
+# USE_ASYNC=false
 # USE_BATCHING=true
+# POLICY=first_fit
+
+# 同步、degree_desc
+# TAG=03_sync_degree_desc
+# USE_ASYNC=false
+# USE_BATCHING=true
+# POLICY=degree_desc
+
+# 异步、不分批
+# TAG=04_async_off
+# USE_ASYNC=true
+# USE_BATCHING=false
+# POLICY=first_fit
+
+# 异步、first_fit
+# TAG=05_async_first_fit
+# USE_ASYNC=true
+# USE_BATCHING=true
+# POLICY=first_fit
+
+# 异步、degree_desc
+# TAG=06_async_degree_desc
+# USE_ASYNC=true
+# USE_BATCHING=true
+# POLICY=degree_desc
 ```
 
 启动服务：
@@ -62,9 +90,10 @@ export VLLM_EPLB_LOG_MIGRATION_STATS=1
 
 MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 RESULTS=$HOME/benchmarks/eplb_rebalance/$TAG
-mkdir -p "$RESULTS"
+BENCH_RESULTS=$HOME/benchmarks/eplb_six_groups
+mkdir -p "$RESULTS" "$BENCH_RESULTS"
 
-EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":true,\"use_migration_batching\":$USE_BATCHING,\"migration_batching_policy\":\"degree_desc\"}"
+EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":$USE_ASYNC,\"use_migration_batching\":$USE_BATCHING,\"migration_batching_policy\":\"$POLICY\"}"
 
 vllm serve "$MODEL" --dtype float16 --port 8000 \
   --gpu-memory-utilization 0.8 --max-model-len 4096 \
@@ -92,27 +121,31 @@ vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
   --percentile-metrics ttft,tpot,e2el \
   --metric-percentiles 50,90,95,99 --ignore-eos --disable-tqdm \
   --save-result --result-dir "$RESULTS" --result-filename bench.json \
-  > "$RESULTS/bench.log" 2>&1
+  > "$BENCH_RESULTS/$TAG.log" 2>&1
 
 kill "$SERVER_PID"
 ```
 
-先后运行两组，并交换顺序再重复一次。不要使用同步 EPLB 或单独的 `main`
-对照组。
+依次运行六组，不需要单独的 `main` 对照组。
 
 ## 4. 已验证结果
 
-两次运行的均值：
+一次完整六组实验：
 
-| 策略 | 耗时 (s) | 输出 (tok/s) | TPOT P50 (ms) | E2EL P99 (ms) | NIC P99 (MB/s) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| async off | 809.69 | 12.35 | 2,027.75 | 395,312.18 | 925.13 |
-| async degree_desc | 797.68 | 12.54 | 2,006.95 | 391,787.35 | 820.92 |
+| 模式 | 策略 | batches | 耗时 (s) | 输出 (tok/s) | E2EL P99 (ms) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| sync | off | 1 | 851.44 | 11.74 | 409,266.36 |
+| sync | first_fit | 6 | 897.57 | 11.14 | 426,808.06 |
+| sync | degree_desc | 6 | 884.77 | 11.30 | 420,434.20 |
+| async | off | 1 | 808.73 | 12.37 | 394,209.66 |
+| async | first_fit | 6 | 789.28 | 12.67 | 388,450.76 |
+| async | degree_desc | 6 | 799.56 | 12.51 | 391,302.04 |
 
-`degree_desc` 平均快 1.48%，head NIC P99 降 11.3%。每层日志应显示约
-`12 flows, 6 batches`。
+`batches` 不是配置值。调度器根据每层迁移图动态计算；这次 12 条 flows
+恰好得到 6 batches。未分批组记为 1 batch。
 
 ```bash
-cat "$RESULTS/bench.log"
+ls -1 "$BENCH_RESULTS"/*.log
+cat "$BENCH_RESULTS/$TAG.log"
 grep -E "EPLB migration stats|Rearranged experts" "$RESULTS/server.log"
 ```
