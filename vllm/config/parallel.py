@@ -35,7 +35,6 @@ ExpertPlacementStrategy = Literal["linear", "round_robin"]
 DistributedExecutorBackend = Literal["ray", "mp", "uni", "external_launcher"]
 DataParallelBackend = Literal["ray", "mp"]
 EPLBPolicyOption = Literal["default"]
-EPLBMigrationBatchingOrder = Literal["first_fit", "degree_desc"]
 DCPCommBackend = Literal["ag_rs", "a2a"]
 EPLBCommunicatorBackend = Literal["torch_nccl", "torch_gloo", "pynccl"]
 All2AllBackend = Literal[
@@ -102,15 +101,6 @@ class EPLBConfig:
     rank-pair flow at a time. Multiple expert transfers between the same source
     and destination are coalesced into one flow. This can reduce NIC/RDMA hot
     spots at the cost of more synchronous P2P steps.
-    """
-
-    migration_batching_policy: EPLBMigrationBatchingOrder = "degree_desc"
-    """
-    Greedy ordering policy for migration batching:
-    - "first_fit": process migrations in deterministic input order (similar to
-      the Omni-infer example).
-    - "degree_desc": process highest-degree endpoints first, usually yielding
-      fewer batches.
     """
 
     migration_batching_max_batches: int | None = None

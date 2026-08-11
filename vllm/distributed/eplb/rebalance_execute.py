@@ -19,7 +19,6 @@ from vllm.logger import init_logger
 from .eplb_communicator import EplbCommunicator
 from .migration_scheduler import (
     MigrationInstruction,
-    MigrationOrder,
     build_migration_instructions,
     per_rank_transfer_counts,
     schedule_migrations_greedy,
@@ -228,7 +227,6 @@ def move_to_buffer(
     communicator: EplbCommunicator,
     is_profile: bool = False,
     migration_batching: bool = False,
-    migration_batching_policy: MigrationOrder = "degree_desc",
     migration_batching_max_batches: int | None = None,
 ) -> MoveToBufferResult:
     """
@@ -248,7 +246,6 @@ def move_to_buffer(
         is_profile: Whether this is the startup profile rearrangement.
         migration_batching: If True, schedule remote P2P transfers into
             conflict-free batches instead of launching them all at once.
-        migration_batching_policy: Greedy ordering policy for batching.
         migration_batching_max_batches: Soft limit on the number of batches.
 
     Returns:
@@ -408,9 +405,7 @@ def move_to_buffer(
         instructions = build_migration_instructions(
             num_local_experts, old_indices, new_indices
         )
-        batches = schedule_migrations_greedy(
-            instructions, order=migration_batching_policy
-        )
+        batches = schedule_migrations_greedy(instructions)
         if envs.VLLM_EPLB_LOG_MIGRATION_STATS and not is_profile:
             _log_migration_stats(
                 instructions,
@@ -545,7 +540,6 @@ async def transfer_layer(
     cuda_stream: torch.cuda.Stream | None = None,
     rank_mapping: dict[int, int] | None = None,
     migration_batching: bool = False,
-    migration_batching_policy: MigrationOrder = "degree_desc",
     migration_batching_max_batches: int | None = None,
 ) -> MoveToBufferResult:
     """
@@ -570,7 +564,6 @@ async def transfer_layer(
         rank_mapping: Optional rank mapping for elastic expert parallelism.
         migration_batching: If True, schedule remote P2P transfers into
             conflict-free batches.
-        migration_batching_policy: Greedy ordering policy for batching.
         migration_batching_max_batches: Soft limit on the number of batches.
 
     Returns:
@@ -624,7 +617,6 @@ async def transfer_layer(
         communicator=communicator,
         is_profile=is_profile,
         migration_batching=migration_batching,
-        migration_batching_policy=migration_batching_policy,
         migration_batching_max_batches=migration_batching_max_batches,
     )
     return is_unchanged, is_received_locally, recv_metadata
@@ -639,7 +631,6 @@ def rearrange_expert_weights_inplace(
     is_profile: bool = False,
     rank_mapping: dict[int, int] | None = None,
     migration_batching: bool = False,
-    migration_batching_policy: MigrationOrder = "degree_desc",
     migration_batching_max_batches: int | None = None,
 ) -> None:
     """
@@ -663,7 +654,6 @@ def rearrange_expert_weights_inplace(
         rank_mapping: A dictionary mapping old rank to new rank.
         migration_batching: If True, schedule remote P2P transfers into
             conflict-free batches.
-        migration_batching_policy: Greedy ordering policy for batching.
         migration_batching_max_batches: Soft limit on the number of batches.
     """
     if rank_mapping is not None:
@@ -732,7 +722,6 @@ def rearrange_expert_weights_inplace(
             communicator=communicator,
             is_profile=is_profile,
             migration_batching=migration_batching,
-            migration_batching_policy=migration_batching_policy,
             migration_batching_max_batches=migration_batching_max_batches,
         )
 

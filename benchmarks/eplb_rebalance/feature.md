@@ -17,12 +17,9 @@ all flows run concurrently; between waves there is a synchronization point.
 This spreads network load over time without serializing every expert tensor.
 
 Scheduling is done with a lightweight online **greedy edge coloring** of the
-migration graph (ranks = vertices, transfers = directed edges). Two ordering
-policies are supported:
-
-- `first_fit`: deterministic input order (similar to the Omni-infer example).
-- `degree_desc` (default): high-degree endpoints first, usually producing
-  fewer batches (closer to the lower bound of max endpoint degree).
+migration graph (ranks = vertices, transfers = directed edges). Coalesced flows
+keep their deterministic input order and are placed into the first batch
+without an endpoint conflict.
 
 The offline ILP solver in `ILP/eplb_migration_ilp.py` serves as an optimal
 baseline to quantify how close the greedy schedules are to the optimum.
@@ -38,16 +35,14 @@ baseline to quantify how close the greedy schedules are to the optimum.
   phase with one communicator execute per batch. Local copies (unchanged and
   intra-rank moves) are unaffected. When disabled, the original behavior is
   preserved.
-- **Configuration** (`vllm/config/parallel.py`): three new `EPLBConfig`
-  fields — `use_migration_batching` (default off), `migration_batching_policy`
-  (`first_fit` | `degree_desc`), and `migration_batching_max_batches` (soft
-  limit; exceeding it logs a warning but the full schedule still runs to keep
-  correctness).
+- **Configuration** (`vllm/config/parallel.py`): two new `EPLBConfig` fields —
+  `use_migration_batching` (default off) and
+  `migration_batching_max_batches` (soft limit; exceeding it logs a warning but
+  the full schedule still runs to keep correctness).
 - **Wiring**: both the synchronous path (`EplbState.rearrange`) and the async
   worker path pass the new config options down to the transfer functions.
 - **Tests** (`tests/distributed/test_eplb_migration_scheduler.py`): unit tests
-  covering instruction building, conflict-freeness and completeness of both
-  policies, the adversarial case where `degree_desc` beats `first_fit`,
+  covering instruction building, conflict-freeness and completeness,
   end-to-end batched execution via a mock communicator, and the soft-limit
   warning.
 
@@ -55,5 +50,4 @@ baseline to quantify how close the greedy schedules are to the optimum.
 
 - Fewer NIC hot spots and more predictable transfer concurrency.
 - Cost: multiple synchronous P2P waves instead of one, so the rebalance step
-  may take slightly longer; `degree_desc` keeps the number of waves near the
-  theoretical minimum.
+  may take slightly longer.

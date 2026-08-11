@@ -818,7 +818,6 @@ class EplbState:
                     is_profile,
                     rank_mapping,
                     migration_batching=eplb_config.use_migration_batching,
-                    migration_batching_policy=eplb_config.migration_batching_policy,
                     migration_batching_max_batches=eplb_config.migration_batching_max_batches,
                 )
 

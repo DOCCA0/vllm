@@ -39,44 +39,28 @@ head 上运行 `ray status`，应看到 4 个节点和 4 张 GPU。
 
 ## 3. 运行一组实验
 
-每组都重新启动服务。六组选一组：
+每组都重新启动服务。四组选一组：
 
 ```bash
 # 同步、不分批
 TAG=01_sync_off
 USE_ASYNC=false
 USE_BATCHING=false
-POLICY=first_fit
 
 # 同步、first_fit
 # TAG=02_sync_first_fit
 # USE_ASYNC=false
 # USE_BATCHING=true
-# POLICY=first_fit
-
-# 同步、degree_desc
-# TAG=03_sync_degree_desc
-# USE_ASYNC=false
-# USE_BATCHING=true
-# POLICY=degree_desc
 
 # 异步、不分批
-# TAG=04_async_off
+# TAG=03_async_off
 # USE_ASYNC=true
 # USE_BATCHING=false
-# POLICY=first_fit
 
 # 异步、first_fit
-# TAG=05_async_first_fit
+# TAG=04_async_first_fit
 # USE_ASYNC=true
 # USE_BATCHING=true
-# POLICY=first_fit
-
-# 异步、degree_desc
-# TAG=06_async_degree_desc
-# USE_ASYNC=true
-# USE_BATCHING=true
-# POLICY=degree_desc
 ```
 
 启动服务：
@@ -90,10 +74,10 @@ export VLLM_EPLB_LOG_MIGRATION_STATS=1
 
 MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 RESULTS=$HOME/benchmarks/eplb_rebalance/$TAG
-BENCH_RESULTS=$HOME/benchmarks/eplb_six_groups
+BENCH_RESULTS=$HOME/benchmarks/eplb_current_groups
 mkdir -p "$RESULTS" "$BENCH_RESULTS"
 
-EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":$USE_ASYNC,\"use_migration_batching\":$USE_BATCHING,\"migration_batching_policy\":\"$POLICY\"}"
+EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":$USE_ASYNC,\"use_migration_batching\":$USE_BATCHING}"
 
 vllm serve "$MODEL" --dtype float16 --port 8000 \
   --gpu-memory-utilization 0.8 --max-model-len 4096 \
@@ -126,20 +110,18 @@ vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
 kill "$SERVER_PID"
 ```
 
-依次运行六组，不需要单独的 `main` 对照组。
+依次运行四组，不需要单独的 `main` 对照组。
 
 ## 4. 已验证结果
 
-一次完整六组实验：
+已验证结果：
 
 | 模式 | 策略 | batches | 耗时 (s) | 输出 (tok/s) | E2EL P99 (ms) |
 | --- | --- | ---: | ---: | ---: | ---: |
 | sync | off | 1 | 851.44 | 11.74 | 409,266.36 |
 | sync | first_fit | 6 | 897.57 | 11.14 | 426,808.06 |
-| sync | degree_desc | 6 | 884.77 | 11.30 | 420,434.20 |
 | async | off | 1 | 808.73 | 12.37 | 394,209.66 |
 | async | first_fit | 6 | 789.28 | 12.67 | 388,450.76 |
-| async | degree_desc | 6 | 799.56 | 12.51 | 391,302.04 |
 
 `batches` 不是配置值。调度器根据每层迁移图动态计算；这次 12 条 flows
 恰好得到 6 batches。未分批组记为 1 batch。

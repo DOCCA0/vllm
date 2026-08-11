@@ -34,16 +34,7 @@ class _MockEplbCommunicator(EplbCommunicator):
         self.execute_count += 1
 
 
-def test_migration_batching_policies():
-    """Adversarial example where first-fit uses more batches than degree_desc.
-
-    Rank 0 is the bottleneck with degree 4, while the other four edges form two
-    disjoint pairs. first_fit processes the disjoint pairs first, "wasting" the
-    first batch and forcing the rank-0 edges into separate batches. degree_desc
-    prioritizes the high-degree rank-0 edges first and then fills the leftover
-    slots with the disjoint pairs, achieving the optimal (max-degree) number of
-    batches.
-    """
+def test_migration_batching_first_fit_order():
     instructions = [
         MigrationInstruction(1, 3, expert=0),
         MigrationInstruction(2, 4, expert=1),
@@ -53,7 +44,7 @@ def test_migration_batching_policies():
         MigrationInstruction(0, 4, expert=5),
     ]
 
-    first_fit_batches = schedule_migrations_greedy(instructions, order="first_fit")
+    first_fit_batches = schedule_migrations_greedy(instructions)
     # first_fit starts with the two disjoint edges, leaving only one slot per
     # batch for a rank-0 edge, so the (0,4) edge ends up in a 5th batch.
     assert len(first_fit_batches) == 5
@@ -65,17 +56,6 @@ def test_migration_batching_policies():
     for batch in first_fit_batches:
         _assert_no_endpoint_conflict(batch)
 
-    degree_desc_batches = schedule_migrations_greedy(instructions, order="degree_desc")
-    # degree_desc processes the rank-0 edges first, filling the leftover slots
-    # with the disjoint edges. This reaches the lower bound of 4 batches.
-    assert len(degree_desc_batches) == 4
-    assert _as_endpoints(degree_desc_batches[0]) == [(0, 1), (2, 4)]
-    assert _as_endpoints(degree_desc_batches[1]) == [(0, 2), (1, 3)]
-    assert _as_endpoints(degree_desc_batches[2]) == [(0, 3)]
-    assert _as_endpoints(degree_desc_batches[3]) == [(0, 4)]
-    for batch in degree_desc_batches:
-        _assert_no_endpoint_conflict(batch)
-
 
 def test_migration_batching_coalesces_same_rank_pair():
     instructions = [
@@ -84,10 +64,9 @@ def test_migration_batching_coalesces_same_rank_pair():
         MigrationInstruction(2, 3, expert=2),
     ]
 
-    for policy in ("first_fit", "degree_desc"):
-        batches = schedule_migrations_greedy(instructions, order=policy)
-        assert len(batches) == 1
-        assert batches[0] == instructions
+    batches = schedule_migrations_greedy(instructions)
+    assert len(batches) == 1
+    assert batches[0] == instructions
 
 
 def test_build_migration_instructions_excludes_local_copies():
@@ -126,13 +105,12 @@ def test_greedy_batches_no_conflicts_and_cover_all():
         if not instructions:
             continue
 
-        for policy in ("first_fit", "degree_desc"):
-            batches = schedule_migrations_greedy(instructions, order=policy)
-            scheduled = [inst for batch in batches for inst in batch]
-            assert len(scheduled) == len(instructions)
-            assert set(scheduled) == set(instructions)
-            for batch in batches:
-                _assert_no_endpoint_conflict(batch)
+        batches = schedule_migrations_greedy(instructions)
+        scheduled = [inst for batch in batches for inst in batch]
+        assert len(scheduled) == len(instructions)
+        assert set(scheduled) == set(instructions)
+        for batch in batches:
+            _assert_no_endpoint_conflict(batch)
 
 
 def test_build_migration_instructions_empty():
@@ -184,7 +162,6 @@ def test_move_to_buffer_batched():
         ep_rank=ep_rank,
         communicator=communicator,
         migration_batching=True,
-        migration_batching_policy="first_fit",
     )
 
     assert communicator.execute_count == 2
@@ -233,7 +210,6 @@ def test_move_to_buffer_max_batches_warning():
             ep_rank=ep_rank,
             communicator=communicator,
             migration_batching=True,
-            migration_batching_policy="first_fit",
             migration_batching_max_batches=2,
         )
 

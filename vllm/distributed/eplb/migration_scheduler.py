@@ -17,13 +17,9 @@ quantify how far the greedy schedule is from the optimum.
 
 from __future__ import annotations
 
-import collections
 from dataclasses import dataclass
-from typing import Literal
 
 import numpy as np
-
-MigrationOrder = Literal["first_fit", "degree_desc"]
 
 
 @dataclass(frozen=True)
@@ -123,7 +119,6 @@ def per_rank_transfer_counts(
 
 def schedule_migrations_greedy(
     instructions: list[MigrationInstruction],
-    order: MigrationOrder = "degree_desc",
 ) -> list[list[MigrationInstruction]]:
     """Group migration instructions into conflict-free batches.
 
@@ -134,17 +129,12 @@ def schedule_migrations_greedy(
     coalesced flows is equivalent to a greedy edge coloring of the rank-pair
     graph.
 
-    Two ordering policies are supported:
-
-    - ``first_fit``: keep the input order. This matches the example from
-      Omni-infer and is easy to reason about.
-    - ``degree_desc``: process edges incident to the highest-degree endpoints
-      first. This usually yields fewer batches and is the default.
+    Coalesced flows keep their deterministic input order and are placed into
+    the first batch without an endpoint conflict.
 
     Args:
         instructions: Remote migration instructions to schedule. Instructions
             for the same directed rank pair are kept together.
-        order: Greedy ordering policy.
 
     Returns:
         A list of batches. Each batch is a list of instructions that can be
@@ -160,29 +150,10 @@ def schedule_migrations_greedy(
         ).append(instruction)
     flows = list(flows_by_pair.values())
 
-    if order == "degree_desc":
-        degree = collections.Counter[int]()
-        for inst in instructions:
-            degree[inst.src_rank] += 1
-            degree[inst.dst_rank] += 1
-
-        ordered_flows = sorted(
-            flows,
-            key=lambda flow: (
-                -degree[flow[0].src_rank] - degree[flow[0].dst_rank],
-                -degree[flow[0].src_rank],
-                -degree[flow[0].dst_rank],
-                flow[0].src_rank,
-                flow[0].dst_rank,
-            ),
-        )
-    else:
-        ordered_flows = flows
-
     batches: list[list[MigrationInstruction]] = []
     endpoints_used: list[set[int]] = []
 
-    for flow in ordered_flows:
+    for flow in flows:
         src_rank = flow[0].src_rank
         dst_rank = flow[0].dst_rank
         placed = False
@@ -202,7 +173,6 @@ def schedule_migrations_greedy(
 
 __all__ = [
     "MigrationInstruction",
-    "MigrationOrder",
     "build_migration_instructions",
     "schedule_migrations_greedy",
 ]

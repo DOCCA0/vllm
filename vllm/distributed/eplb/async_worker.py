@@ -164,7 +164,6 @@ async def transfer_run_periodically(
                             is_profile=is_profile,
                             cuda_stream=cuda_stream,
                             migration_batching=eplb_config.use_migration_batching,
-                            migration_batching_policy=eplb_config.migration_batching_policy,
                             migration_batching_max_batches=eplb_config.migration_batching_max_batches,
                         )
                         # block the async thread until the transfer to
