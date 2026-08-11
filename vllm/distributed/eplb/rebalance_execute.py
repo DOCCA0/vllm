@@ -21,7 +21,7 @@ from .migration_scheduler import (
     MigrationInstruction,
     build_migration_instructions,
     per_rank_transfer_counts,
-    schedule_migrations_greedy,
+    schedule_migration_batches,
 )
 
 logger = init_logger(__name__)
@@ -226,8 +226,7 @@ def move_to_buffer(
     ep_rank: int,
     communicator: EplbCommunicator,
     is_profile: bool = False,
-    migration_batching: bool = False,
-    migration_batching_max_batches: int | None = None,
+    enable_migration_batching: bool = False,
 ) -> MoveToBufferResult:
     """
     Rearranges expert weights during EPLB rebalancing.
@@ -244,9 +243,8 @@ def move_to_buffer(
         ep_rank: Rank of this process in expert parallel group.
         communicator: EplbCommunicator instance for P2P communication.
         is_profile: Whether this is the startup profile rearrangement.
-        migration_batching: If True, schedule remote P2P transfers into
+        enable_migration_batching: If True, schedule remote P2P transfers into
             conflict-free batches instead of launching them all at once.
-        migration_batching_max_batches: Soft limit on the number of batches.
 
     Returns:
         is_unchanged (np.ndarray): (num_local_experts,), True where an expert row
@@ -325,7 +323,7 @@ def move_to_buffer(
 
     # 2/3/4. Remote transfers: either batched or all-at-once.
     do_remote = send_count > 0 or recv_count > 0
-    if not migration_batching or not do_remote:
+    if not enable_migration_batching or not do_remote:
         # 2. Post sends
         if send_count > 0:
             experts = send_expert_ids[:send_count]
@@ -405,24 +403,13 @@ def move_to_buffer(
         instructions = build_migration_instructions(
             num_local_experts, old_indices, new_indices
         )
-        batches = schedule_migrations_greedy(instructions)
+        batches = schedule_migration_batches(instructions)
         if envs.VLLM_EPLB_LOG_MIGRATION_STATS and not is_profile:
             _log_migration_stats(
                 instructions,
                 old_indices.shape[0] // num_local_experts,
                 num_batches=len(batches),
                 ep_rank=ep_rank,
-            )
-
-        if (
-            migration_batching_max_batches is not None
-            and len(batches) > migration_batching_max_batches
-        ):
-            logger.warning(
-                "EPLB migration batching produced %d batches, exceeding the "
-                "soft limit of %d. The full schedule will still be executed.",
-                len(batches),
-                migration_batching_max_batches,
             )
 
         for batch in batches:
@@ -539,8 +526,7 @@ async def transfer_layer(
     is_profile: bool = False,
     cuda_stream: torch.cuda.Stream | None = None,
     rank_mapping: dict[int, int] | None = None,
-    migration_batching: bool = False,
-    migration_batching_max_batches: int | None = None,
+    enable_migration_batching: bool = False,
 ) -> MoveToBufferResult:
     """
     Rearranges the expert weights in place according to the new expert indices.
@@ -562,9 +548,8 @@ async def transfer_layer(
             communications to reserve enough memory for the buffers.
         cuda_stream: CUDA stream for async copies (can be None for sync mode).
         rank_mapping: Optional rank mapping for elastic expert parallelism.
-        migration_batching: If True, schedule remote P2P transfers into
+        enable_migration_batching: If True, schedule remote P2P transfers into
             conflict-free batches.
-        migration_batching_max_batches: Soft limit on the number of batches.
 
     Returns:
         is_unchanged (np.ndarray): (num_local_experts,), True where expert
@@ -616,8 +601,7 @@ async def transfer_layer(
         ep_rank=ep_group.rank(),
         communicator=communicator,
         is_profile=is_profile,
-        migration_batching=migration_batching,
-        migration_batching_max_batches=migration_batching_max_batches,
+        enable_migration_batching=enable_migration_batching,
     )
     return is_unchanged, is_received_locally, recv_metadata
 
@@ -630,8 +614,7 @@ def rearrange_expert_weights_inplace(
     communicator: EplbCommunicator,
     is_profile: bool = False,
     rank_mapping: dict[int, int] | None = None,
-    migration_batching: bool = False,
-    migration_batching_max_batches: int | None = None,
+    enable_migration_batching: bool = False,
 ) -> None:
     """
     Rearranges the expert weights in place according to the new expert indices.
@@ -652,9 +635,8 @@ def rearrange_expert_weights_inplace(
             This is used during profile run, where we only perform dummy
             communications to reserve enough memory for the buffers.
         rank_mapping: A dictionary mapping old rank to new rank.
-        migration_batching: If True, schedule remote P2P transfers into
+        enable_migration_batching: If True, schedule remote P2P transfers into
             conflict-free batches.
-        migration_batching_max_batches: Soft limit on the number of batches.
     """
     if rank_mapping is not None:
         if len(rank_mapping) == ep_group.size():
@@ -721,8 +703,7 @@ def rearrange_expert_weights_inplace(
             ep_rank=ep_rank,
             communicator=communicator,
             is_profile=is_profile,
-            migration_batching=migration_batching,
-            migration_batching_max_batches=migration_batching_max_batches,
+            enable_migration_batching=enable_migration_batching,
         )
 
         move_from_buffer(

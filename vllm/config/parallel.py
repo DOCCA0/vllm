@@ -94,7 +94,7 @@ class EPLBConfig:
     - None: Auto-select backend ("torch_gloo" for async, "torch_nccl" for sync)
     """
 
-    use_migration_batching: bool = False
+    enable_migration_batching: bool = False
     """
     If True, schedule remote expert weight transfers during EPLB rebalancing
     into waves (batches) where no rank participates in more than one distinct
@@ -103,24 +103,12 @@ class EPLBConfig:
     spots at the cost of more synchronous P2P steps.
     """
 
-    migration_batching_max_batches: int | None = None
-    """
-    Soft upper bound on the number of migration batches. If the greedy
-    schedule requires more batches than this limit, a warning is logged but
-    the full schedule is still executed to preserve correctness.
-    """
-
     @model_validator(mode="after")
     def _validate_eplb_config(self) -> Self:
         if self.use_async and self.policy != "default":
             raise ValueError("Async EPLB is only supported with the default policy.")
         if self.log_balancedness and self.log_balancedness_interval <= 0:
             raise ValueError("log_balancedness_interval must be greater than 0.")
-        if (
-            self.migration_batching_max_batches is not None
-            and self.migration_batching_max_batches <= 0
-        ):
-            raise ValueError("migration_batching_max_batches must be positive.")
         return self
 
 

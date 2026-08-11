@@ -117,7 +117,7 @@ def per_rank_transfer_counts(
     return send, recv
 
 
-def schedule_migrations_greedy(
+def schedule_migration_batches(
     instructions: list[MigrationInstruction],
 ) -> list[list[MigrationInstruction]]:
     """Group migration instructions into conflict-free batches.
@@ -174,5 +174,5 @@ def schedule_migrations_greedy(
 __all__ = [
     "MigrationInstruction",
     "build_migration_instructions",
-    "schedule_migrations_greedy",
+    "schedule_migration_batches",
 ]

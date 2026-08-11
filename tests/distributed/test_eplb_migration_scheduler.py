@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-from unittest.mock import patch
-
 import numpy as np
 import pytest
 import torch
@@ -11,7 +9,7 @@ from vllm.distributed.eplb.migration_scheduler import (
     MigrationInstruction,
     build_migration_instructions,
     per_rank_transfer_counts,
-    schedule_migrations_greedy,
+    schedule_migration_batches,
 )
 from vllm.distributed.eplb.rebalance_execute import move_to_buffer
 
@@ -34,7 +32,7 @@ class _MockEplbCommunicator(EplbCommunicator):
         self.execute_count += 1
 
 
-def test_migration_batching_first_fit_order():
+def test_migration_batching_deterministic_order():
     instructions = [
         MigrationInstruction(1, 3, expert=0),
         MigrationInstruction(2, 4, expert=1),
@@ -44,16 +42,16 @@ def test_migration_batching_first_fit_order():
         MigrationInstruction(0, 4, expert=5),
     ]
 
-    first_fit_batches = schedule_migrations_greedy(instructions)
-    # first_fit starts with the two disjoint edges, leaving only one slot per
-    # batch for a rank-0 edge, so the (0,4) edge ends up in a 5th batch.
-    assert len(first_fit_batches) == 5
-    assert _as_endpoints(first_fit_batches[0]) == [(1, 3), (2, 4)]
-    assert _as_endpoints(first_fit_batches[1]) == [(0, 1)]
-    assert _as_endpoints(first_fit_batches[2]) == [(0, 2)]
-    assert _as_endpoints(first_fit_batches[3]) == [(0, 3)]
-    assert _as_endpoints(first_fit_batches[4]) == [(0, 4)]
-    for batch in first_fit_batches:
+    batches = schedule_migration_batches(instructions)
+    # The two disjoint flows occupy the first batch. Rank 0 then conflicts
+    # with every later flow, so each one opens a new batch.
+    assert len(batches) == 5
+    assert _as_endpoints(batches[0]) == [(1, 3), (2, 4)]
+    assert _as_endpoints(batches[1]) == [(0, 1)]
+    assert _as_endpoints(batches[2]) == [(0, 2)]
+    assert _as_endpoints(batches[3]) == [(0, 3)]
+    assert _as_endpoints(batches[4]) == [(0, 4)]
+    for batch in batches:
         _assert_no_endpoint_conflict(batch)
 
 
@@ -64,7 +62,7 @@ def test_migration_batching_coalesces_same_rank_pair():
         MigrationInstruction(2, 3, expert=2),
     ]
 
-    batches = schedule_migrations_greedy(instructions)
+    batches = schedule_migration_batches(instructions)
     assert len(batches) == 1
     assert batches[0] == instructions
 
@@ -105,7 +103,7 @@ def test_greedy_batches_no_conflicts_and_cover_all():
         if not instructions:
             continue
 
-        batches = schedule_migrations_greedy(instructions)
+        batches = schedule_migration_batches(instructions)
         scheduled = [inst for batch in batches for inst in batch]
         assert len(scheduled) == len(instructions)
         assert set(scheduled) == set(instructions)
@@ -161,7 +159,7 @@ def test_move_to_buffer_batched():
         cuda_stream=None,
         ep_rank=ep_rank,
         communicator=communicator,
-        migration_batching=True,
+        enable_migration_batching=True,
     )
 
     assert communicator.execute_count == 2
@@ -184,41 +182,6 @@ def _assert_no_endpoint_conflict(batch):
         assert dst_rank not in used, f"dst {dst_rank} reused"
         used.add(src_rank)
         used.add(dst_rank)
-
-
-def test_move_to_buffer_max_batches_warning():
-    # 4 ranks, 1 local expert each. rank 0 holds expert 0 and all ranks want it,
-    # so the remote sends from rank 0 need 3 conflict-free batches.
-    # With max_batches=2 this triggers the soft-limit warning.
-    old = np.array([0, 1, 2, 3], dtype=np.int64)
-    new = np.array([0, 0, 0, 0], dtype=np.int64)
-    ep_rank = 0
-    weight = torch.zeros(1, 1)
-    buffer = torch.zeros(1, 1)
-    communicator = _MockEplbCommunicator()
-
-    with patch(
-        "vllm.distributed.eplb.rebalance_execute.logger.warning"
-    ) as mock_warning:
-        move_to_buffer(
-            num_local_experts=1,
-            old_indices=old,
-            new_indices=new,
-            expert_weights=[weight],
-            expert_weights_buffers=[buffer],
-            cuda_stream=None,
-            ep_rank=ep_rank,
-            communicator=communicator,
-            migration_batching=True,
-            migration_batching_max_batches=2,
-        )
-
-    assert communicator.execute_count == 3
-    assert len(communicator.send_calls) == 3
-    assert set(dst for dst, _ in communicator.send_calls) == {1, 2, 3}
-    mock_warning.assert_called_once()
-    args, _ = mock_warning.call_args
-    assert "exceeding the soft limit" in args[0]
 
 
 if __name__ == "__main__":

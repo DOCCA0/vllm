@@ -35,16 +35,13 @@ baseline to quantify how close the greedy schedules are to the optimum.
   phase with one communicator execute per batch. Local copies (unchanged and
   intra-rank moves) are unaffected. When disabled, the original behavior is
   preserved.
-- **Configuration** (`vllm/config/parallel.py`): two new `EPLBConfig` fields —
-  `use_migration_batching` (default off) and
-  `migration_batching_max_batches` (soft limit; exceeding it logs a warning but
-  the full schedule still runs to keep correctness).
+- **Configuration** (`vllm/config/parallel.py`): one new `EPLBConfig` field,
+  `enable_migration_batching` (default off).
 - **Wiring**: both the synchronous path (`EplbState.rearrange`) and the async
   worker path pass the new config options down to the transfer functions.
 - **Tests** (`tests/distributed/test_eplb_migration_scheduler.py`): unit tests
   covering instruction building, conflict-freeness and completeness,
-  end-to-end batched execution via a mock communicator, and the soft-limit
-  warning.
+  and end-to-end batched execution via a mock communicator.
 
 ## Trade-offs
 
