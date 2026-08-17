@@ -49,31 +49,35 @@ Choose one configuration before each run:
 TAG=01_sync_off
 USE_ASYNC=false
 USE_BATCHING=false
+COMMUNICATOR=torch_nccl
 
 # Synchronous, batching enabled
 TAG=02_sync_batching_on
 USE_ASYNC=false
 USE_BATCHING=true
+COMMUNICATOR=torch_nccl
 
 # Asynchronous, batching disabled
 TAG=03_async_off
 USE_ASYNC=true
 USE_BATCHING=false
+COMMUNICATOR=torch_gloo
 
 # Asynchronous, batching enabled
 TAG=04_async_batching_on
 USE_ASYNC=true
 USE_BATCHING=true
+COMMUNICATOR=torch_gloo
 ```
 
 Select the result root for the workload being tested:
 
 ```bash
 # Random workload
-RESULTS_ROOT=$HOME/benchmarks/eplb_200_prefix_cache_on_20260817
+RESULTS_ROOT=$HOME/benchmarks/eplb_upstream_random_cache_on_20260817_r1
 
 # Phased English workload
-RESULTS_ROOT=$HOME/benchmarks/eplb_phased_english_cache_on_20260817
+RESULTS_ROOT=$HOME/benchmarks/eplb_upstream_phased_cache_on_20260818_r1
 ```
 
 Start a fresh service for every configuration:
@@ -89,7 +93,7 @@ MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 RESULTS=$RESULTS_ROOT/$TAG
 mkdir -p "$RESULTS"
 
-EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":$USE_ASYNC,\"enable_migration_batching\":$USE_BATCHING}"
+EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":$USE_ASYNC,\"communicator\":\"$COMMUNICATOR\",\"enable_migration_batching\":$USE_BATCHING}"
 
 vllm serve "$MODEL" --dtype float16 --port 8000 \
   --gpu-memory-utilization 0.8 --max-model-len 4096 \
@@ -134,7 +138,7 @@ vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
 Results are stored under:
 
 ```text
-/home/cc/benchmarks/eplb_200_prefix_cache_on_20260817/
+/home/cc/benchmarks/eplb_upstream_random_cache_on_20260817_r1/
 ```
 
 ### B. Phased English workload
@@ -180,7 +184,7 @@ vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
 Results are stored under:
 
 ```text
-/home/cc/benchmarks/eplb_phased_english_cache_on_20260817/
+/home/cc/benchmarks/eplb_upstream_phased_cache_on_20260818_r1/
 ```
 
 Stop the sampler and service after each run:
@@ -195,19 +199,19 @@ kill "$NIC_PID" "$SERVER_PID"
 
 | Mode | batching | Duration (s) | Output (tok/s) | E2EL P99 (ms) | NIC P99 (MB/s) | NIC Peak (MB/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| sync | false | 979.74 | 20.41 | 211,622.31 | 1863.81 | 2066.54 |
-| sync | true | 1028.97 | 19.44 | 211,641.61 | 1188.89 | 1266.94 |
-| async | false | 895.46 | 22.33 | 188,001.06 | 1067.90 | 1170.88 |
-| async | true | 872.12 | 22.93 | 182,382.76 | 904.43 | 949.66 |
+| sync | false | 988.94 | 20.22 | 186,001.25 | 1852.22 | 1930.67 |
+| sync | true | 1067.07 | 18.74 | 200,128.55 | 1153.45 | 1210.99 |
+| async | false | 889.51 | 22.48 | 162,839.73 | 707.21 | 802.06 |
+| async | true | 875.30 | 22.85 | 161,767.77 | 649.08 | 701.98 |
 
 ### Phased English workload, prefix cache enabled
 
 | Mode | batching | Duration (s) | Output (tok/s) | E2EL P99 (ms) | NIC P99 (MB/s) | NIC Peak (MB/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| sync | false | 926.62 | 27.63 | 144,514.36 | 1917.30 | 2027.71 |
-| sync | true | 1009.09 | 25.37 | 154,407.98 | 1177.96 | 1257.16 |
-| async | false | 855.80 | 29.91 | 137,387.57 | 1114.55 | 1217.50 |
-| async | true | 821.08 | 31.18 | 126,408.37 | 853.07 | 1008.49 |
+| sync | false | 952.94 | 26.86 | 134,590.88 | 1829.08 | 1982.54 |
+| sync | true | 1052.99 | 24.31 | 156,878.38 | 1161.40 | 1208.52 |
+| async | false | 845.10 | 30.29 | 108,864.96 | 799.65 | 914.92 |
+| async | true | 815.56 | 31.39 | 104,369.71 | 705.32 | 770.31 |
 
 The main comparison for the proposed optimization is `03_async_off` versus
 `04_async_batching_on`. `batches` is calculated from each layer's migration
