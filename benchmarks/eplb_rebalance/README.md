@@ -144,11 +144,17 @@ CUDA, literature, mathematics, and biomedical prompts, repeated twice. The
 ordered domain changes make the expert distribution move repeatedly. Each
 prompt retains a common 223-token prefix, so prefix caching is still exercised.
 
-The JSONL is stored on the head node at:
+The exact JSONL used for the experiment is tracked in the repository at:
 
 ```text
-/home/cc/benchmarks/eplb_phased_english_cache_on_20260817/workload/eplb_phased_english_256.jsonl
+benchmarks/eplb_rebalance/bench_dataset/eplb_phased_english_256.jsonl
 ```
+
+It was generated deterministically by
+`bench_dataset/generate_phased_english.py`. Its SHA-256 is
+`15f80f77caf13b44c1ee715a2db0663daf6a5f884fcbb5769998b46b86482dda`.
+The experiment directory also retains an identical archived copy under
+`workload/`.
 
 If the custom loader reports that bench support is missing, install its required
 dependency on the head node:
@@ -160,7 +166,7 @@ uv pip install --python $HOME/.venv/bin/python pandas
 Run it without shuffling so the phases remain ordered:
 
 ```bash
-DATASET=$HOME/benchmarks/eplb_phased_english_cache_on_20260817/workload/eplb_phased_english_256.jsonl
+DATASET=$HOME/vllm/benchmarks/eplb_rebalance/bench_dataset/eplb_phased_english_256.jsonl
 
 vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
   --dataset-name custom --dataset-path "$DATASET" --disable-shuffle \
