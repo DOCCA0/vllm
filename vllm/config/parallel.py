@@ -94,13 +94,14 @@ class EPLBConfig:
     - None: Auto-select backend ("torch_gloo" for async, "torch_nccl" for sync)
     """
 
-    enable_migration_batching: bool = False
+    enable_migration_batching: bool = True
     """
     If True, schedule remote expert weight transfers during EPLB rebalancing
     into waves (batches) where no rank participates in more than one distinct
     rank-pair flow at a time. Multiple expert transfers between the same source
     and destination are coalesced into one flow. This can reduce NIC/RDMA hot
     spots at the cost of more synchronous P2P steps.
+    Set to False to restore the single-step migration path.
     """
 
     @model_validator(mode="after")

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 
+from vllm.config.parallel import EPLBConfig
 from vllm.distributed.eplb.eplb_communicator import EplbCommunicator
 from vllm.distributed.eplb.migration_scheduler import (
     MigrationInstruction,
@@ -30,6 +31,11 @@ class _MockEplbCommunicator(EplbCommunicator):
 
     def execute(self) -> None:
         self.execute_count += 1
+
+
+def test_migration_batching_is_enabled_by_default_and_can_be_disabled():
+    assert EPLBConfig().enable_migration_batching
+    assert not EPLBConfig(enable_migration_batching=False).enable_migration_batching
 
 
 def test_migration_batching_deterministic_order():

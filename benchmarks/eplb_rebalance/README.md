@@ -2,6 +2,7 @@
 
 Both workloads below keep prefix caching enabled. Run four configurations for
 each workload: `sync/off`, `sync/on`, `async/off`, and `async/on`.
+Migration batching is enabled by default; set it to `false` for rollback.
 
 ## 1. Pull the Code
 
@@ -43,6 +44,9 @@ ray start --address=10.140.83.156:6379 --disable-usage-stats
 ## 3. Start vLLM
 
 Choose one configuration before each run:
+
+The benchmark pins Gloo for async runs instead of using communicator
+auto-selection, so batching is the only variable between each off/on pair.
 
 ```bash
 # Synchronous, batching disabled
