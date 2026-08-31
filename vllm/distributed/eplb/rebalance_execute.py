@@ -253,6 +253,44 @@ def _execute_migration_batch(
     communicator.execute()
 
 
+def _execute_migration_batches(
+    num_local_experts: int,
+    old_indices: np.ndarray,
+    new_indices: np.ndarray,
+    ep_rank: int,
+    expert_weights: Sequence[torch.Tensor],
+    expert_weights_buffers: Sequence[torch.Tensor],
+    communicator: EplbCommunicator,
+    layer_idx: int,
+) -> None:
+    """Execute all contention-aware migration batches for one layer."""
+    instructions = build_migration_instructions(
+        num_local_experts, old_indices, new_indices
+    )
+    batches = schedule_migration_batches(instructions)
+    if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
+        _log_migration_stats(
+            instructions,
+            len(batches),
+            num_local_experts,
+            old_indices,
+            ep_rank,
+            layer_idx,
+        )
+    for batch in batches:
+        _execute_migration_batch(
+            batch=batch,
+            num_local_experts=num_local_experts,
+            old_indices=old_indices,
+            new_indices=new_indices,
+            ep_rank=ep_rank,
+            expert_weights=expert_weights,
+            expert_weights_buffers=expert_weights_buffers,
+            communicator=communicator,
+            layer_idx=layer_idx,
+        )
+
+
 def _get_migration_row(
     rows: dict[int, int],
     instruction: MigrationInstruction,
@@ -373,40 +411,27 @@ def move_to_buffer(
                     for w, b in zip(expert_weights, expert_weights_buffers):
                         b[dst].copy_(w[src_local], non_blocking=True)
 
+    transfer_metadata = TransferMetadata(
+        is_unchanged=is_unchanged,
+        is_received_locally=is_received_locally,
+        recv_primary_mask=recv_primary_mask,
+        recv_count=recv_count,
+        recv_expert_ids=recv_expert_ids,
+        recv_dst_rows=recv_dst_rows,
+    )
+
     if enable_migration_batching:
-        instructions = build_migration_instructions(
-            num_local_experts, old_indices, new_indices
+        _execute_migration_batches(
+            num_local_experts=num_local_experts,
+            old_indices=old_indices,
+            new_indices=new_indices,
+            ep_rank=ep_rank,
+            expert_weights=expert_weights,
+            expert_weights_buffers=expert_weights_buffers,
+            communicator=communicator,
+            layer_idx=layer_idx,
         )
-        batches = schedule_migration_batches(instructions)
-        if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
-            _log_migration_stats(
-                instructions,
-                len(batches),
-                num_local_experts,
-                old_indices,
-                ep_rank,
-                layer_idx,
-            )
-        for batch in batches:
-            _execute_migration_batch(
-                batch=batch,
-                num_local_experts=num_local_experts,
-                old_indices=old_indices,
-                new_indices=new_indices,
-                ep_rank=ep_rank,
-                expert_weights=expert_weights,
-                expert_weights_buffers=expert_weights_buffers,
-                communicator=communicator,
-                layer_idx=layer_idx,
-            )
-        return TransferMetadata(
-            is_unchanged=is_unchanged,
-            is_received_locally=is_received_locally,
-            recv_primary_mask=recv_primary_mask,
-            recv_count=recv_count,
-            recv_expert_ids=recv_expert_ids,
-            recv_dst_rows=recv_dst_rows,
-        )
+        return transfer_metadata
 
     if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
         instructions = build_migration_instructions(
@@ -491,14 +516,7 @@ def move_to_buffer(
 
     # 4. Execute transfers and wait for completion.
     communicator.execute()
-    return TransferMetadata(
-        is_unchanged=is_unchanged,
-        is_received_locally=is_received_locally,
-        recv_primary_mask=recv_primary_mask,
-        recv_count=recv_count,
-        recv_expert_ids=recv_expert_ids,
-        recv_dst_rows=recv_dst_rows,
-    )
+    return transfer_metadata
 
 
 def move_from_buffer(
