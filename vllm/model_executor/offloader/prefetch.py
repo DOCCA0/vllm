@@ -21,6 +21,7 @@ import torch.nn as nn
 import vllm.model_executor.offloader.prefetch_ops  # noqa: F401
 from vllm.logger import init_logger
 from vllm.model_executor.offloader.base import BaseOffloader, should_pin_memory
+from vllm.utils.torch_utils import get_dtype_size
 
 logger = init_logger(__name__)
 
@@ -53,7 +54,7 @@ class ParamInfo:
         numel = 1
         for dim in self.shape:
             numel *= dim
-        return numel * torch.finfo(self.dtype).bits // 8
+        return numel * get_dtype_size(self.dtype)
 
 
 class StaticBufferPool:
@@ -162,11 +163,15 @@ class PrefetchOffloader(BaseOffloader):
     def wrap_modules(
         self,
         modules_generator: Generator[nn.Module, None, None],
+        prefix: str = "",
     ) -> list[nn.Module]:
         """Wrap modules with prefetch offloading logic."""
         assert len(self.module_offloaders) == 0, (
             "wrap_modules should only be called once"
         )
+
+        if prefix:
+            prefix = f"{prefix}."
 
         all_modules = []
         offload_modules = []
@@ -181,7 +186,9 @@ class PrefetchOffloader(BaseOffloader):
                     whitelist = [
                         name
                         for name, _ in module.named_parameters()
-                        if any(f".{p}." in f".{name}." for p in self.offload_params)
+                        if any(
+                            f".{p}." in f".{prefix}{name}." for p in self.offload_params
+                        )
                     ]
                 else:
                     whitelist = [name for name, _ in module.named_parameters()]
