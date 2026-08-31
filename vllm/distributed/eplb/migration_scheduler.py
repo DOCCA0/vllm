@@ -64,6 +64,7 @@ def build_migration_instructions(
     Returns:
         A deterministic list of remote migration instructions.
     """
+    assert old_indices.shape == new_indices.shape
     old_flat = old_indices[old_indices != -1]
     new_flat = new_indices[new_indices != -1]
     if old_flat.size == 0 and new_flat.size == 0:

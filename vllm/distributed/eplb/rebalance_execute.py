@@ -197,23 +197,36 @@ def _execute_migration_batch(
         if inst.src_rank == ep_rank:
             base = ep_rank * num_local_experts
             local_old = old_indices[base : base + num_local_experts]
-            src_matches = np.nonzero(local_old == inst.expert)[0]
-            if src_matches.size == 0:
-                continue
-            src_row = int(src_matches[0])
+            src_row = _get_migration_row(local_old, inst, ep_rank, mapping_name="old")
             for w in expert_weights:
                 communicator.add_send(w[src_row], inst.dst_rank)
         elif inst.dst_rank == ep_rank:
             base = ep_rank * num_local_experts
             local_new = new_indices[base : base + num_local_experts]
-            dst_matches = np.nonzero(local_new == inst.expert)[0]
-            if dst_matches.size == 0:
-                continue
-            dst_row = int(dst_matches[0])
+            dst_row = _get_migration_row(local_new, inst, ep_rank, mapping_name="new")
             for b in expert_weights_buffers:
                 communicator.add_recv(b[dst_row], inst.src_rank)
 
     communicator.execute()
+
+
+def _get_migration_row(
+    local_indices: np.ndarray,
+    instruction: MigrationInstruction,
+    ep_rank: int,
+    mapping_name: str,
+) -> int:
+    matches = np.nonzero(local_indices == instruction.expert)[0]
+    if matches.size > 0:
+        return int(matches[0])
+
+    message = (
+        f"Expert {instruction.expert} is missing from the {mapping_name} "
+        f"mapping on rank {ep_rank} for migration "
+        f"{instruction.src_rank} -> {instruction.dst_rank}"
+    )
+    logger.error(message)
+    raise RuntimeError(message)
 
 
 def move_to_buffer(

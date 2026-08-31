@@ -12,7 +12,7 @@ from vllm.distributed.eplb.migration_scheduler import (
     per_rank_transfer_counts,
     schedule_migration_batches,
 )
-from vllm.distributed.eplb.rebalance_execute import move_to_buffer
+from vllm.distributed.eplb.rebalance_execute import move_from_buffer, move_to_buffer
 
 
 class _MockEplbCommunicator(EplbCommunicator):
@@ -123,6 +123,14 @@ def test_build_migration_instructions_empty():
     assert build_migration_instructions(2, old, new) == []
 
 
+def test_build_migration_instructions_requires_matching_shapes():
+    old = np.array([0, 1], dtype=np.int64)
+    new = np.array([0], dtype=np.int64)
+
+    with pytest.raises(AssertionError):
+        build_migration_instructions(1, old, new)
+
+
 def test_per_rank_transfer_counts():
     instructions = [
         MigrationInstruction(0, 1, expert=0),
@@ -174,6 +182,38 @@ def test_move_to_buffer_batched():
     assert communicator.send_calls[0][0] == 3
     assert len(communicator.recv_calls) == 1
     assert communicator.recv_calls[0][0] == 1
+
+
+def test_move_to_buffer_batched_completes_weight_update():
+    old = np.array([0, 1, 2, 3], dtype=np.int64)
+    new = np.array([2, 2, 0, 3], dtype=np.int64)
+    weight = torch.zeros(2, 1)
+    buffer = torch.zeros(2, 1)
+    communicator = _MockEplbCommunicator()
+
+    is_unchanged, is_received_locally, recv_metadata = move_to_buffer(
+        num_local_experts=2,
+        old_indices=old,
+        new_indices=new,
+        expert_weights=[weight],
+        expert_weights_buffers=[buffer],
+        cuda_stream=None,
+        ep_rank=0,
+        communicator=communicator,
+        enable_migration_batching=True,
+    )
+
+    buffer[0].fill_(42)
+    move_from_buffer(
+        expert_weights=[weight],
+        expert_weights_buffers=[buffer],
+        is_unchanged=is_unchanged,
+        is_received_locally=is_received_locally,
+        recv_metadata=recv_metadata,
+        new_indices=new,
+        ep_rank=0,
+    )
+    torch.testing.assert_close(weight, torch.full((2, 1), 42.0))
 
 
 def _as_endpoints(instructions):
