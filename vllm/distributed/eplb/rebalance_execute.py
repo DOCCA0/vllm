@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from torch.distributed import ProcessGroup, all_gather
 
+import vllm.envs as envs
 from vllm.distributed.eplb.eplb_communicator import EplbCommunicator
 from vllm.distributed.eplb.eplb_utils import CpuGpuEvent
 from vllm.distributed.eplb.migration_scheduler import (
@@ -24,6 +25,36 @@ from vllm.logger import init_logger
 from vllm.utils.gpu_sync_debug import gpu_sync_allowed
 
 logger = init_logger(__name__)
+
+
+def _log_migration_stats(
+    instructions: list[MigrationInstruction],
+    num_batches: int,
+    num_local_experts: int,
+    old_indices: np.ndarray,
+    ep_rank: int,
+    layer_idx: int,
+) -> None:
+    if ep_rank != 0 or not instructions:
+        return
+    world_size = old_indices.size // num_local_experts
+    counts = np.zeros(world_size, dtype=np.int64)
+    for instruction in instructions:
+        counts[instruction.src_rank] += 1
+        counts[instruction.dst_rank] += 1
+    mean = float(counts.mean())
+    flows = {(item.src_rank, item.dst_rank) for item in instructions}
+    logger.info(
+        "EPLB migration stats: layer=%d transfers=%d flows=%d batches=%d "
+        "per-rank peak=%d mean=%.1f hotspot_ratio=%.2f",
+        layer_idx,
+        len(instructions),
+        len(flows),
+        num_batches,
+        int(counts.max()),
+        mean,
+        float(counts.max()) / mean if mean else 1.0,
+    )
 
 
 @dataclass
@@ -346,7 +377,17 @@ def move_to_buffer(
         instructions = build_migration_instructions(
             num_local_experts, old_indices, new_indices
         )
-        for batch in schedule_migration_batches(instructions):
+        batches = schedule_migration_batches(instructions)
+        if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
+            _log_migration_stats(
+                instructions,
+                len(batches),
+                num_local_experts,
+                old_indices,
+                ep_rank,
+                layer_idx,
+            )
+        for batch in batches:
             _execute_migration_batch(
                 batch=batch,
                 num_local_experts=num_local_experts,
@@ -365,6 +406,19 @@ def move_to_buffer(
             recv_count=recv_count,
             recv_expert_ids=recv_expert_ids,
             recv_dst_rows=recv_dst_rows,
+        )
+
+    if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
+        instructions = build_migration_instructions(
+            num_local_experts, old_indices, new_indices
+        )
+        _log_migration_stats(
+            instructions,
+            1,
+            num_local_experts,
+            old_indices,
+            ep_rank,
+            layer_idx,
         )
 
     communicator.set_transfer_context(old_indices, layer_idx)
