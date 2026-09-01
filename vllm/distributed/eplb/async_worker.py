@@ -139,9 +139,6 @@ def transfer_run_periodically(
                     enable_migration_batching=(
                         state.parallel_config.eplb_config.enable_migration_batching
                     ),
-                    max_num_migration_peers_per_rank=(
-                        state.parallel_config.eplb_config.max_num_migration_peers_per_rank
-                    ),
                 )
 
                 # Wait until all writes to expert_buffer have finished before making the

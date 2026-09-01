@@ -901,9 +901,6 @@ class EplbState:
                         enable_migration_batching=(
                             self.parallel_config.eplb_config.enable_migration_batching
                         ),
-                        max_num_migration_peers_per_rank=(
-                            self.parallel_config.eplb_config.max_num_migration_peers_per_rank
-                        ),
                     )
 
                     if not is_profile:

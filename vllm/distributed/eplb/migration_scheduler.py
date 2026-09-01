@@ -66,39 +66,30 @@ def build_migration_instructions(
 
 def schedule_migration_batches(
     instructions: list[MigrationInstruction],
-    max_num_peers_per_rank: int = 1,
 ) -> list[list[MigrationInstruction]]:
-    """Greedily group transfers with a bounded number of peers per rank.
+    """Greedily group transfers so each rank uses at most one peer per batch.
 
     Transfers with the same directed rank pair are kept in one flow. Flows are
-    assigned to the first batch where neither endpoint exceeds the peer limit.
+    assigned to the first batch where neither endpoint is already in use.
     """
-    if max_num_peers_per_rank <= 0:
-        raise ValueError("max_num_peers_per_rank must be greater than 0")
-
     flows_by_pair: dict[tuple[int, int], list[MigrationInstruction]] = {}
     for instruction in instructions:
         key = (instruction.src_rank, instruction.dst_rank)
         flows_by_pair.setdefault(key, []).append(instruction)
 
     batches: list[list[MigrationInstruction]] = []
-    peers_by_rank: list[dict[int, set[int]]] = []
+    endpoints_used: list[set[int]] = []
     for flow in flows_by_pair.values():
         src_rank = flow[0].src_rank
         dst_rank = flow[0].dst_rank
-        for batch, peers in zip(batches, peers_by_rank):
-            src_peers = peers.get(src_rank, set())
-            dst_peers = peers.get(dst_rank, set())
-            if (dst_rank in src_peers or len(src_peers) < max_num_peers_per_rank) and (
-                src_rank in dst_peers or len(dst_peers) < max_num_peers_per_rank
-            ):
+        for batch, used in zip(batches, endpoints_used):
+            if src_rank not in used and dst_rank not in used:
                 batch.extend(flow)
-                peers.setdefault(src_rank, set()).add(dst_rank)
-                peers.setdefault(dst_rank, set()).add(src_rank)
+                used.update((src_rank, dst_rank))
                 break
         else:
             batches.append(list(flow))
-            peers_by_rank.append({src_rank: {dst_rank}, dst_rank: {src_rank}})
+            endpoints_used.append({src_rank, dst_rank})
 
     return batches
 

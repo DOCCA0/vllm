@@ -101,14 +101,9 @@ class EPLBConfig:
 
     enable_migration_batching: bool = True
     """Schedule expert migrations in batches where each rank communicates with
-    a bounded number of peers. This reduces per-rank network contention at the
-    cost of additional sequential communication steps. Set to False to use one
+    at most one peer. This reduces per-rank network contention at the cost of
+    additional sequential communication steps. Set to False to use one
     communication step for all migrations."""
-
-    max_num_migration_peers_per_rank: int = Field(default=1, gt=0)
-    """Maximum number of peers a rank may communicate with in one expert
-    migration batch. Higher values can reduce the number of sequential batches
-    on high-bandwidth networks."""
 
     @model_validator(mode="after")
     def _validate_eplb_config(self) -> Self:
