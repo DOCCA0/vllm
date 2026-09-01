@@ -41,7 +41,11 @@ class _MockEplbCommunicator(EplbCommunicator):
 
 def test_migration_batching_is_enabled_by_default_and_can_be_disabled() -> None:
     assert EPLBConfig().enable_migration_batching
+    assert EPLBConfig().max_num_migration_peers_per_rank == 1
     assert not EPLBConfig(enable_migration_batching=False).enable_migration_batching
+
+    with pytest.raises(ValueError):
+        EPLBConfig(max_num_migration_peers_per_rank=0)
 
 
 def test_schedule_migration_batches_is_deterministic() -> None:
@@ -64,7 +68,7 @@ def test_schedule_migration_batches_is_deterministic() -> None:
         [(0, 4)],
     ]
     for batch in batches:
-        _assert_no_endpoint_conflict(batch)
+        _assert_peer_limit(batch)
 
 
 def test_schedule_migration_batches_coalesces_rank_pair() -> None:
@@ -75,6 +79,26 @@ def test_schedule_migration_batches_coalesces_rank_pair() -> None:
     ]
 
     assert schedule_migration_batches(instructions) == [instructions]
+
+
+def test_schedule_migration_batches_allows_configured_peer_limit() -> None:
+    instructions = [
+        MigrationInstruction(0, 1, expert_id=0),
+        MigrationInstruction(0, 2, expert_id=1),
+        MigrationInstruction(0, 3, expert_id=2),
+        MigrationInstruction(1, 0, expert_id=3),
+    ]
+
+    batches = schedule_migration_batches(instructions, max_num_peers_per_rank=2)
+
+    assert batches == [instructions[:2] + instructions[3:], instructions[2:3]]
+    for batch in batches:
+        _assert_peer_limit(batch, max_num_peers_per_rank=2)
+
+
+def test_schedule_migration_batches_rejects_invalid_peer_limit() -> None:
+    with pytest.raises(ValueError, match="must be greater than 0"):
+        schedule_migration_batches([], max_num_peers_per_rank=0)
 
 
 def test_schedule_migration_batches_covers_random_instructions() -> None:
@@ -91,7 +115,7 @@ def test_schedule_migration_batches_covers_random_instructions() -> None:
     assert len(scheduled) == len(instructions)
     assert set(scheduled) == set(instructions)
     for batch in batches:
-        _assert_no_endpoint_conflict(batch)
+        _assert_peer_limit(batch)
 
 
 def test_build_migration_instructions_excludes_local_copies() -> None:
@@ -124,7 +148,12 @@ def test_build_migration_instructions_balances_replicas() -> None:
     ]
 
 
-def test_move_to_buffer_uses_multiple_batches() -> None:
+@pytest.mark.parametrize(
+    ("max_num_peers_per_rank", "expected_batches"), [(1, 2), (2, 1)]
+)
+def test_move_to_buffer_uses_configured_peer_limit(
+    max_num_peers_per_rank: int, expected_batches: int
+) -> None:
     old_indices = np.array([0, 1, 2, 3], dtype=np.int64)
     new_indices = np.array([1, 2, 3, 0], dtype=np.int64)
     communicator = _MockEplbCommunicator()
@@ -140,10 +169,11 @@ def test_move_to_buffer_uses_multiple_batches() -> None:
         communicator=communicator,
         layer_idx=7,
         enable_migration_batching=True,
+        max_num_migration_peers_per_rank=max_num_peers_per_rank,
     )
 
-    assert communicator.context_calls == 2
-    assert communicator.execute_count == 2
+    assert communicator.context_calls == expected_batches
+    assert communicator.execute_count == expected_batches
     assert [(dst, expert) for _, dst, expert in communicator.send_calls] == [(3, 0)]
     assert [(src, expert) for _, src, expert in communicator.recv_calls] == [(1, 1)]
 
@@ -189,13 +219,11 @@ def _endpoints(
     return [(item.src_rank, item.dst_rank) for item in instructions]
 
 
-def _assert_no_endpoint_conflict(batch: list[MigrationInstruction]) -> None:
-    endpoints: set[int] = set()
-    rank_pairs: set[tuple[int, int]] = set()
+def _assert_peer_limit(
+    batch: list[MigrationInstruction], max_num_peers_per_rank: int = 1
+) -> None:
+    peers_by_rank: dict[int, set[int]] = {}
     for instruction in batch:
-        rank_pair = (instruction.src_rank, instruction.dst_rank)
-        if rank_pair not in rank_pairs:
-            assert instruction.src_rank not in endpoints
-            assert instruction.dst_rank not in endpoints
-            endpoints.update(rank_pair)
-            rank_pairs.add(rank_pair)
+        peers_by_rank.setdefault(instruction.src_rank, set()).add(instruction.dst_rank)
+        peers_by_rank.setdefault(instruction.dst_rank, set()).add(instruction.src_rank)
+    assert all(len(peers) <= max_num_peers_per_rank for peers in peers_by_rank.values())

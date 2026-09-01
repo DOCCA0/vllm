@@ -230,6 +230,7 @@ def _execute_migration_batch(
         if expert_id != -1:
             new_rows.setdefault(int(expert_id), row)
 
+    # NIXL clears its transfer context in execute(), so restore it per batch.
     communicator.set_transfer_context(old_indices, layer_idx)
     for instruction in batch:
         if instruction.src_rank == ep_rank:
@@ -262,12 +263,15 @@ def _execute_migration_batches(
     expert_weights_buffers: Sequence[torch.Tensor],
     communicator: EplbCommunicator,
     layer_idx: int,
+    max_num_peers_per_rank: int,
 ) -> None:
     """Execute all contention-aware migration batches for one layer."""
     instructions = build_migration_instructions(
         num_local_experts, old_indices, new_indices
     )
-    batches = schedule_migration_batches(instructions)
+    batches = schedule_migration_batches(
+        instructions, max_num_peers_per_rank=max_num_peers_per_rank
+    )
     if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
         _log_migration_stats(
             instructions,
@@ -321,6 +325,7 @@ def move_to_buffer(
     communicator: EplbCommunicator,
     layer_idx: int = 0,
     enable_migration_batching: bool = False,
+    max_num_migration_peers_per_rank: int = 1,
 ) -> TransferMetadata:
     """
     Rearranges expert weights during EPLB rebalancing.
@@ -338,7 +343,9 @@ def move_to_buffer(
         communicator: EplbCommunicator instance for P2P communication.
         layer_idx: Index of the MoE layer being transferred.
         enable_migration_batching: Schedule remote transfers in batches where
-            each rank communicates with at most one peer.
+            each rank communicates with a bounded number of peers.
+        max_num_migration_peers_per_rank: Maximum peers per rank in one
+            migration batch.
 
     Returns:
         TransferMetadata: Metadata needed for completing remote weight transfers.
@@ -430,6 +437,7 @@ def move_to_buffer(
             expert_weights_buffers=expert_weights_buffers,
             communicator=communicator,
             layer_idx=layer_idx,
+            max_num_peers_per_rank=max_num_migration_peers_per_rank,
         )
         return transfer_metadata
 
@@ -608,6 +616,7 @@ def transfer_layer(
     rank_mapping: dict[int, int] | None = None,
     layer_idx: int = 0,
     enable_migration_batching: bool = False,
+    max_num_migration_peers_per_rank: int = 1,
 ) -> TransferMetadata:
     """
     Rearranges the expert weights in place according to the new expert indices.
@@ -631,7 +640,9 @@ def transfer_layer(
         rank_mapping: Optional rank mapping for elastic expert parallelism.
         layer_idx: Index of the MoE layer being transferred.
         enable_migration_batching: Schedule remote transfers in batches where
-            each rank communicates with at most one peer.
+            each rank communicates with a bounded number of peers.
+        max_num_migration_peers_per_rank: Maximum peers per rank in one
+            migration batch.
 
     Returns:
         TransferMetadata: Metadata needed for completing remote weight transfers,
@@ -681,6 +692,7 @@ def transfer_layer(
         communicator=communicator,
         layer_idx=layer_idx,
         enable_migration_batching=enable_migration_batching,
+        max_num_migration_peers_per_rank=max_num_migration_peers_per_rank,
     )
 
 
@@ -694,6 +706,7 @@ def rearrange_expert_weights_inplace(
     is_profile: bool = False,
     rank_mapping: dict[int, int] | None = None,
     enable_migration_batching: bool = False,
+    max_num_migration_peers_per_rank: int = 1,
 ) -> None:
     """
     Rearranges the expert weights in place according to the new expert indices.
@@ -717,7 +730,9 @@ def rearrange_expert_weights_inplace(
             communications to reserve enough memory for the buffers.
         rank_mapping: A dictionary mapping old rank to new rank.
         enable_migration_batching: Schedule remote transfers in batches where
-            each rank communicates with at most one peer.
+            each rank communicates with a bounded number of peers.
+        max_num_migration_peers_per_rank: Maximum peers per rank in one
+            migration batch.
     """
     if rank_mapping is not None:
         if len(rank_mapping) == ep_group.size():
@@ -787,6 +802,7 @@ def rearrange_expert_weights_inplace(
             communicator=communicator,
             layer_idx=layer_idx,
             enable_migration_batching=enable_migration_batching,
+            max_num_migration_peers_per_rank=max_num_migration_peers_per_rank,
         )
 
         move_from_buffer(
