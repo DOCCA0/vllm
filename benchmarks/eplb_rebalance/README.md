@@ -3,6 +3,8 @@
 Both workloads below keep prefix caching enabled. Run four configurations for
 each workload: `sync/off`, `sync/on`, `async/off`, and `async/on`.
 Migration batching is enabled by default; set it to `false` for rollback.
+The default peer limit is `1`; increase it to trade less serialization for
+more network concurrency.
 
 Environment: Ubuntu 22.04.5, four Quadro RTX 6000 24 GB GPUs (one per
 node), NVIDIA 580.167.08, Ray 2.56.1, NIXL 1.3.2, and 10 GbE. The tested
@@ -63,24 +65,28 @@ nodes do not have RDMA devices.
 TAG=01_sync_off
 USE_ASYNC=false
 USE_BATCHING=false
+MAX_PEERS=1
 COMMUNICATOR=nixl
 
 # Synchronous, batching enabled
 TAG=02_sync_batching_on
 USE_ASYNC=false
 USE_BATCHING=true
+MAX_PEERS=1
 COMMUNICATOR=nixl
 
 # Asynchronous, batching disabled
 TAG=03_async_off
 USE_ASYNC=true
 USE_BATCHING=false
+MAX_PEERS=1
 COMMUNICATOR=nixl
 
 # Asynchronous, batching enabled
 TAG=04_async_batching_on
 USE_ASYNC=true
 USE_BATCHING=true
+MAX_PEERS=1
 COMMUNICATOR=nixl
 ```
 
@@ -106,7 +112,7 @@ MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 RESULTS=$RESULTS_ROOT/$TAG
 mkdir -p "$RESULTS"
 
-EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":$USE_ASYNC,\"communicator\":\"$COMMUNICATOR\",\"enable_migration_batching\":$USE_BATCHING}"
+EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":$USE_ASYNC,\"communicator\":\"$COMMUNICATOR\",\"enable_migration_batching\":$USE_BATCHING,\"max_num_migration_peers_per_rank\":$MAX_PEERS}"
 
 vllm serve "$MODEL" --dtype float16 --port 8000 \
   --gpu-memory-utilization 0.8 --max-model-len 4096 \
