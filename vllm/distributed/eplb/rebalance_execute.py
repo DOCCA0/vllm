@@ -217,7 +217,7 @@ def _execute_migration_batch(
     communicator: EplbCommunicator,
     layer_idx: int,
 ) -> None:
-    """Execute one batch of rank-pair-disjoint expert transfers."""
+    """Execute one scheduled batch of expert transfers."""
     base = ep_rank * num_local_experts
     old_local = old_indices[base : base + num_local_experts]
     new_local = new_indices[base : base + num_local_experts]
