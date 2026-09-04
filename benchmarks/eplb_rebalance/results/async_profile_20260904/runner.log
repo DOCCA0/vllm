@@ -1,0 +1,9 @@
+START 2026-09-04T09:20:46+00:00 random batching=false
+END 2026-09-04T09:37:33+00:00 random batching=false rc=0
+START 2026-09-04T09:37:53+00:00 random batching=true
+END 2026-09-04T09:54:37+00:00 random batching=true rc=0
+START 2026-09-04T09:54:57+00:00 phased batching=false
+END 2026-09-04T10:10:24+00:00 phased batching=false rc=0
+START 2026-09-04T10:10:44+00:00 phased batching=true
+END 2026-09-04T10:26:06+00:00 phased batching=true rc=0
+ALL DONE 2026-09-04T10:26:26+00:00

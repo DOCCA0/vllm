@@ -51,40 +51,47 @@ def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer.writerows(rows)
 
 
-def estimate_cost_benefit(
-    rows: list[dict[str, Any]], result_dir: Path
-) -> list[dict[str, Any]]:
-    serving_dir = result_dir.parent / "nixl_cache_on_20260901"
-    x = np.asarray([row["migrations"] for row in rows])
-    p50 = np.asarray([row["total_p50_ms"] for row in rows])
-    p99 = np.asarray([row["total_p99_ms"] for row in rows])
+def measure_cost_benefit(result_dir: Path) -> list[dict[str, Any]]:
+    serving_dir = result_dir.parent / "async_profile_20260904"
     output: list[dict[str, Any]] = []
-    pattern = re.compile(r"EPLB migration stats:.*?transfers=(\d+)")
+    pattern = re.compile(
+        r"EPLB migration stats:.*?transfers=(\d+).*?"
+        r"build_ns=(\d+) greedy_ns=(\d+)"
+    )
     for workload in ("random", "phased"):
         workload_dir = serving_dir / workload
-        off = json.loads((workload_dir / "03_async_off" / "bench.json").read_text())
-        on = json.loads(
-            (workload_dir / "04_async_batching_on" / "bench.json").read_text()
+        off = json.loads(
+            (workload_dir / "00_async_off_clean" / "bench.json").read_text()
         )
-        log = (workload_dir / "04_async_batching_on" / "server.log").read_text(
+        on = json.loads(
+            (workload_dir / "02_async_batching_on" / "bench.json").read_text()
+        )
+        log = (workload_dir / "02_async_batching_on" / "server.log").read_text(
             errors="replace"
         )
-        migrations = [int(value) for value in pattern.findall(log)]
+        timings = [tuple(map(int, match)) for match in pattern.findall(log)]
+        migrations = [timing[0] for timing in timings]
+        build_ms = [timing[1] / 1e6 for timing in timings]
+        greedy_ms = [timing[2] / 1e6 for timing in timings]
+        total_ms = [build + greedy for build, greedy in zip(build_ms, greedy_ms)]
         saved_ms = (off["duration"] - on["duration"]) * 1000
-        scheduler_p50_ms = float(sum(np.interp(migrations, x, p50)))
-        scheduler_p99_ms = float(sum(np.interp(migrations, x, p99)))
+        scheduler_total_ms = sum(total_ms)
         output.append(
             {
                 "workload": workload,
                 "layer_migrations": len(migrations),
                 "expert_migrations": sum(migrations),
-                "min_migrations_per_layer": min(migrations),
-                "max_migrations_per_layer": max(migrations),
+                "build_total_ms": sum(build_ms),
+                "greedy_total_ms": sum(greedy_ms),
+                "scheduler_total_ms": scheduler_total_ms,
+                "scheduler_per_layer_p50_ms": percentile(total_ms, 50),
+                "scheduler_per_layer_p99_ms": percentile(total_ms, 99),
+                "async_off_duration_s": off["duration"],
+                "async_on_duration_s": on["duration"],
                 "serving_time_saved_ms": saved_ms,
-                "scheduler_p50_ms": scheduler_p50_ms,
-                "scheduler_p99_ms": scheduler_p99_ms,
-                "overhead_ratio_p50_pct": scheduler_p50_ms / saved_ms * 100,
-                "overhead_ratio_p99_pct": scheduler_p99_ms / saved_ms * 100,
+                "cost_to_saving_ratio_pct": (
+                    scheduler_total_ms / saved_ms * 100 if saved_ms > 0 else None
+                ),
             }
         )
     return output
@@ -126,9 +133,9 @@ def plot(
     width = 0.34
     scheduler_bars = benefit.bar(
         positions - width / 2,
-        [row["scheduler_p50_ms"] for row in cost_benefit],
+        [row["scheduler_total_ms"] for row in cost_benefit],
         width,
-        label="Estimated build + greedy grouping P50",
+        label="Measured build + greedy grouping",
     )
     saving_bars = benefit.bar(
         positions + width / 2,
@@ -139,12 +146,22 @@ def plot(
     benefit.set_xticks(positions)
     benefit.set_xticklabels([row["workload"].title() for row in cost_benefit])
     benefit.set_ylabel("Time over the full benchmark (ms)")
-    benefit.set_title("Scheduling cost versus serving benefit")
+    benefit.set_title("Actual scheduling cost versus serving change")
     benefit.grid(True, axis="y", alpha=0.25)
     benefit.legend(fontsize=8)
-    benefit.bar_label(scheduler_bars, fmt="%.0f ms", padding=3, fontsize=8)
-    benefit.bar_label(saving_bars, fmt="%.0f ms", padding=3, fontsize=8)
-    benefit.margins(y=0.10)
+    for bars in (scheduler_bars, saving_bars):
+        for bar in bars:
+            height = bar.get_height()
+            benefit.annotate(
+                f"{height:.0f} ms",
+                (bar.get_x() + bar.get_width() / 2, max(height, 0)),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+    benefit.margins(y=0.12)
 
     figure.suptitle("EPLB batching scheduler overhead")
     figure.tight_layout()
@@ -160,7 +177,7 @@ def main() -> None:
     if not rows:
         raise RuntimeError(f"No JSON files found in {args.result_dir / 'raw'}")
     write_csv(rows, args.result_dir / "scheduler_scaling.csv")
-    cost_benefit = estimate_cost_benefit(rows, args.result_dir)
+    cost_benefit = measure_cost_benefit(args.result_dir)
     write_csv(cost_benefit, args.result_dir / "cost_benefit.csv")
     plot(rows, cost_benefit, args.result_dir / "scheduler_cost_benefit.png")
 

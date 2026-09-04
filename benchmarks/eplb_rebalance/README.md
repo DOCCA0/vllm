@@ -288,52 +288,83 @@ Instruction construction includes a scan of the fixed 128-expert placement,
 while greedy grouping grows with the migration count. The total P50 increased
 by only 0.195 ms from 12 to 120 migrations.
 
-For a like-for-like cost comparison, the analysis reads the migration count of
-every layer from the existing async batching-on server logs, interpolates the
-measured P50 scheduler cost, and sums it over the full benchmark:
+### Actual async serving profile
+
+The cost/benefit ratio uses a separate real serving A/B rather than interpolated
+microbenchmark timings. Both runs use the same server command as the end-to-end
+benchmark. For clean off, set `USE_BATCHING=false` and
+`VLLM_EPLB_LOG_MIGRATION_STATS=0`. For profiled on, set both to `true`/`1`:
+
+```bash
+cd ~/vllm-ilp
+export PATH=$PWD/.venv/bin:$HOME/.local/bin:$PATH
+export LD_LIBRARY_PATH=$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13/lib
+export NCCL_IB_DISABLE=1 NCCL_SOCKET_FAMILY=AF_INET
+export NCCL_SOCKET_IFNAME=eno2 GLOO_SOCKET_IFNAME=eno2
+export UCX_TLS=all UCX_NET_DEVICES=eno2 UCX_RCACHE_MAX_UNRELEASED=1024
+export VLLM_EPLB_LOG_MIGRATION_STATS=1
+
+MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
+USE_BATCHING=true
+EPLB_CONFIG="{\"window_size\":50,\"step_interval\":100,\"num_redundant_experts\":16,\"log_balancedness\":false,\"use_async\":true,\"communicator\":\"nixl\",\"enable_migration_batching\":$USE_BATCHING}"
+
+vllm serve "$MODEL" --dtype float16 --port 8000 \
+  --gpu-memory-utilization 0.8 --max-model-len 4096 \
+  --enable-prefix-caching --tensor-parallel-size 4 \
+  --distributed-executor-backend ray --enable-expert-parallel \
+  --enable-eplb --eplb-config "$EPLB_CONFIG" --enforce-eager
+```
+
+Run the random and phased `vllm bench serve` commands from section 4 without
+changing their prompt, cache, concurrency, or seed settings.
+
+For rank 0, the measured cumulative scheduler cost is:
 
 $$
-C_{\mathrm{sched}} = \sum_i
-T_{50}\!\left(m_i\right)
+C_{\mathrm{actual}} = \sum_i
+\left(t_{\mathrm{build},i} + t_{\mathrm{greedy},i}\right)
 $$
-
-Here, $m_i$ is the number of expert migrations in layer migration $i$, and
-$T_{50}(m_i)$ is the interpolated P50 instruction-build plus greedy-grouping
-time. The serving time saved and cost-to-saving ratio are:
 
 $$
 S = \left(D_{\mathrm{async,off}} - D_{\mathrm{async,on}}\right) \times 1000
 $$
 
 $$
-R = \frac{C_{\mathrm{sched}}}{S} \times 100\%.
+R = \frac{C_{\mathrm{actual}}}{S} \times 100\%, \qquad S > 0.
 $$
 
-All four ranks schedule concurrently. The profile pools individual per-rank
-timings rather than summing them, so $C_{\mathrm{sched}}$ already represents a
-typical rank's cumulative time and must not be divided by four again. If total
-cluster CPU work were summed first, ideal four-rank parallelism would give
-$C_{\mathrm{cluster}} / 4 \approx C_{\mathrm{sched}}$.
+The four ranks execute the same scheduler concurrently, so this uses one
+representative rank and does not sum or divide by four. Layers within that rank's
+async worker are processed sequentially.
 
-| Workload | Layer migrations | Expert migrations | Build + greedy P50 estimate (ms) | Serving time saved (ms) | Overhead ratio |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Random | 215 | 21,669 | 265 | 2,063 | 12.85% |
-| Phased English | 213 | 21,480 | 263 | 15,674 | 1.67% |
+| Workload | Layer migrations | Expert migrations | Actual build (ms) | Actual greedy (ms) | Actual total (ms) | Serving time saved (ms) | Ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Random | 212 | 21,347 | 1,062.57 | 21.34 | 1,083.91 | -450.95 | N/A |
+| Phased English | 209 | 21,222 | 997.79 | 20.17 | 1,017.96 | 12,532.52 | 8.12% |
 
-Thus the estimated scheduling cost remained below the measured async serving
-time saved in both workloads. The phased workload is more representative of
-production traffic; the random-number workload changes expert load less and
-therefore exercises the batching feature less. These ratios use one existing
-off/on serving run per workload, so they are cost estimates rather than
-confidence-bounded performance claims. They are also conservative because
-migration-stat logging builds instructions in the off runs, while the estimate
-charges the full instruction-build and greedy cost to batching.
+| Workload | Build P50/P99 (ms/layer) | Greedy P50/P99 (ms/layer) | Total P50/P99 (ms/layer) |
+| --- | ---: | ---: | ---: |
+| Random | 4.802 / 8.045 | 0.092 / 0.237 | 4.892 / 8.298 |
+| Phased English | 4.551 / 8.426 | 0.091 / 0.199 | 4.642 / 8.563 |
+
+| Workload | Batching | Duration (s) | Output (tok/s) | TTFT P50/P99 (ms) | TPOT P50/P99 (ms) | E2EL P50/P99 (ms) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Random | off | 905.61 | 22.08 | 44,471.04 / 84,429.71 | 950.87 / 1,358.91 | 139,600.41 / 165,185.00 |
+| Random | on | 906.06 | 22.07 | 44,969.64 / 84,539.74 | 953.07 / 1,366.07 | 139,543.17 / 164,971.26 |
+| Phased English | off | 838.21 | 30.54 | 39,630.66 / 60,866.05 | 683.17 / 1,025.31 | 104,776.95 / 109,623.15 |
+| Phased English | on | 825.68 | 31.00 | 39,551.25 / 61,213.48 | 654.56 / 1,003.99 | 102,964.56 / 106,507.91 |
+
+Random changed total serving time by only -0.05%, producing no positive saving
+and therefore no meaningful ratio. On phased English, batching saved 12.53 s;
+the directly measured 1.02 s of build plus greedy work was 8.12% of that saving.
+The in-serving per-layer times are higher than the isolated microbenchmark
+because they include real CPU contention while the server is active.
 
 ![Scheduler cost and benefit](results/nixl_scheduler_scaling_20260904/scheduler_cost_benefit.png)
 
-The six unmodified JSON files, all 24 rank logs, and both generated CSV files
-are in `results/nixl_scheduler_scaling_20260904/`. Regenerate the tables and
-figure with:
+The scaling JSON and logs are in `results/nixl_scheduler_scaling_20260904/`.
+The actual serving JSON and raw logs are in
+`results/async_profile_20260904/`. Regenerate the tables and figure with:
 
 ```bash
 .venv/bin/python benchmarks/eplb_rebalance/analyze_scheduler_scaling.py \
