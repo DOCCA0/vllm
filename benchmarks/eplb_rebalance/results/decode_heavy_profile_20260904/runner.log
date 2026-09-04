@@ -1,0 +1,10 @@
+START 2026-09-04T11:43:15+00:00 commit=5f5aca0ac22f5b1472421e5db671ab82af8a7404
+CASE_START 2026-09-04T11:43:15+00:00 random 00_async_off_clean
+CASE_END 2026-09-04T12:09:35+00:00 random 00_async_off_clean rc=0
+CASE_START 2026-09-04T12:09:55+00:00 random 01_async_batching_on
+CASE_END 2026-09-04T12:36:00+00:00 random 01_async_batching_on rc=0
+CASE_START 2026-09-04T12:36:20+00:00 phased 00_async_off_clean
+CASE_END 2026-09-04T13:09:25+00:00 phased 00_async_off_clean rc=0
+CASE_START 2026-09-04T13:09:45+00:00 phased 01_async_batching_on
+CASE_END 2026-09-04T13:42:32+00:00 phased 01_async_batching_on rc=0
+DONE 2026-09-04T13:42:52+00:00
