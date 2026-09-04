@@ -81,44 +81,82 @@ def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer.writerows(rows)
 
 
-def plot(rows: list[dict[str, Any]], path: Path) -> None:
+def serving_improvements(result_dir: Path) -> dict[str, list[float]]:
+    serving_dir = result_dir.parent / "nixl_cache_on_20260901"
+    metric_keys = [
+        "output_throughput",
+        "p50_ttft_ms",
+        "p99_ttft_ms",
+        "p50_tpot_ms",
+        "p99_tpot_ms",
+        "p50_e2el_ms",
+        "p99_e2el_ms",
+    ]
+    improvements: dict[str, list[float]] = {}
+    for workload in ("random", "phased"):
+        off = json.loads(
+            (serving_dir / workload / "03_async_off" / "bench.json").read_text()
+        )
+        on = json.loads(
+            (serving_dir / workload / "04_async_batching_on" / "bench.json").read_text()
+        )
+        values = [(on[metric_keys[0]] / off[metric_keys[0]] - 1) * 100]
+        values.extend((off[key] - on[key]) / off[key] * 100 for key in metric_keys[1:])
+        improvements[workload] = values
+    return improvements
+
+
+def plot(rows: list[dict[str, Any]], result_dir: Path, path: Path) -> None:
     sizes = np.asarray([row["expert_mib"] for row in rows])
-    off_p50 = np.asarray([row["off_p50_ms"] for row in rows])
-    off_p99 = np.asarray([row["off_p99_ms"] for row in rows])
-    on_p50 = np.asarray([row["on_p50_ms"] for row in rows])
-    on_p99 = np.asarray([row["on_p99_ms"] for row in rows])
-    slowdown = np.asarray([row["slowdown_p50_pct"] for row in rows])
-    scheduler_share = np.asarray([row["scheduler_share_pct"] for row in rows])
+    build_p50 = np.asarray([row["build_p50_ms"] for row in rows])
+    greedy_p50 = np.asarray([row["greedy_p50_ms"] for row in rows])
+    scheduler_p99 = np.asarray([row["scheduler_p99_ms"] for row in rows])
+    serving = serving_improvements(result_dir)
 
-    figure, axes = plt.subplots(1, 2, figsize=(11, 4.2))
-    latency = axes[0]
-    latency.plot(sizes, off_p50, "o-", label="Batching off P50")
-    latency.plot(sizes, on_p50, "o-", label="Batching on P50")
-    latency.plot(sizes, off_p99, "--", alpha=0.6, label="Off P99")
-    latency.plot(sizes, on_p99, "--", alpha=0.6, label="On P99")
-    latency.set_xscale("log", base=2)
-    latency.set_yscale("log")
-    latency.set_xlabel("Payload per expert (MiB)")
-    latency.set_ylabel("Migration latency (ms, slowest rank)")
-    latency.set_title("Migration-only latency")
-    latency.grid(True, which="both", alpha=0.25)
-    latency.legend(fontsize=8)
+    figure, axes = plt.subplots(1, 2, figsize=(12.5, 4.2))
+    scheduler = axes[0]
+    scheduler.plot(sizes, build_p50, "o-", label="Instruction build P50")
+    scheduler.plot(sizes, greedy_p50, "o-", label="Greedy grouping P50")
+    scheduler.plot(sizes, scheduler_p99, "o--", label="Total scheduler P99")
+    scheduler.set_xscale("log", base=2)
+    scheduler.set_yscale("log")
+    scheduler.set_xlabel("Payload per expert (MiB)")
+    scheduler.set_ylabel("Python time (ms)")
+    scheduler.set_title("Scheduling stays near 1.2 ms per layer")
+    scheduler.grid(True, which="both", alpha=0.25)
+    scheduler.legend(fontsize=8)
 
-    overhead = axes[1]
-    overhead.plot(sizes, slowdown, "o-", label="Total batching slowdown")
-    overhead.plot(
-        sizes,
-        scheduler_share,
-        "o-",
-        label="Python scheduler / off latency",
+    serving_axis = axes[1]
+    labels = [
+        "Throughput",
+        "TTFT P50",
+        "TTFT P99",
+        "TPOT P50",
+        "TPOT P99",
+        "E2EL P50",
+        "E2EL P99",
+    ]
+    positions = np.arange(len(labels))
+    width = 0.36
+    serving_axis.bar(
+        positions - width / 2,
+        serving["random"],
+        width,
+        label="Random",
     )
-    overhead.set_xscale("log", base=2)
-    overhead.set_yscale("log")
-    overhead.set_xlabel("Payload per expert (MiB)")
-    overhead.set_ylabel("P50 overhead (%)")
-    overhead.set_title("Fixed cost is visible for tiny experts")
-    overhead.grid(True, which="both", alpha=0.25)
-    overhead.legend(fontsize=8)
+    serving_axis.bar(
+        positions + width / 2,
+        serving["phased"],
+        width,
+        label="Phased English",
+    )
+    serving_axis.axhline(0, color="black", linewidth=0.8)
+    serving_axis.set_xticks(positions)
+    serving_axis.set_xticklabels(labels, rotation=35, ha="right")
+    serving_axis.set_ylabel("Improvement with batching (%)")
+    serving_axis.set_title("Measured async serving result")
+    serving_axis.grid(True, axis="y", alpha=0.25)
+    serving_axis.legend(fontsize=8)
 
     size_labels = [
         "4 KiB",
@@ -131,20 +169,19 @@ def plot(rows: list[dict[str, Any]], path: Path) -> None:
         "16 MiB",
         "64 MiB",
     ]
-    for axis in axes:
-        axis.set_xticks(sizes)
-        axis.set_xticklabels(size_labels, rotation=35, ha="right")
-        axis.axvline(9, color="black", linestyle=":", alpha=0.7)
+    scheduler.set_xticks(sizes)
+    scheduler.set_xticklabels(size_labels, rotation=35, ha="right")
+    scheduler.axvline(9, color="black", linestyle=":", alpha=0.7)
     qwen_index = list(sizes).index(9)
-    latency.annotate(
-        "Qwen3-30B expert",
-        xy=(9, on_p50[qwen_index]),
-        xytext=(15, -30),
+    scheduler.annotate(
+        "Qwen3-30B: 1.202/1.329 ms P50/P99",
+        xy=(9, build_p50[qwen_index]),
+        xytext=(20, -55),
         textcoords="offset points",
         fontsize=8,
         arrowprops={"arrowstyle": "->", "linewidth": 0.8},
     )
-    figure.suptitle("Four-node NIXL EPLB migration profile (102 transfers, 6 batches)")
+    figure.suptitle("EPLB scheduling overhead and async serving impact")
     figure.tight_layout()
     figure.savefig(path, dpi=180, bbox_inches="tight")
 
@@ -159,7 +196,7 @@ def main() -> None:
     if not rows:
         raise RuntimeError(f"No profile JSON files found in {raw_dir}")
     write_csv(rows, args.result_dir / "summary.csv")
-    plot(rows, args.result_dir / "migration_profile.png")
+    plot(rows, args.result_dir, args.result_dir / "migration_profile.png")
 
 
 if __name__ == "__main__":

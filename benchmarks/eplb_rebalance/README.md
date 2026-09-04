@@ -242,11 +242,11 @@ layer when batching was enabled.
 
 ## 6. Migration Profiling
 
-This profile isolates NIXL migration; it does not run inference or repeat the
+This profile measures the added Python scheduling work without repeating the
 serving benchmark. It uses 32 physical slots per rank, 102 remote transfers,
-12 directed rank-pair flows, and six scheduled batches. Each point alternates
-batching off/on for ten measured repetitions after two warmups. Reported
-migration latency is the slowest rank in each repetition.
+12 directed rank-pair flows, and six scheduled batches. Each payload point has
+500 scheduler repetitions; the raw files also retain ten alternating off/on
+NIXL migrations after two warmups.
 
 Run the following command on all four nodes, changing `NODE_RANK` from 0 to 3.
 Repeat it for each payload size.
@@ -272,21 +272,25 @@ Qwen3-30B-A3B has `hidden_size=2048` and
 `moe_intermediate_size=768`. Its two FP16 expert matrices total exactly 9 MiB
 per expert, so the 9 MiB point matches the model used by the serving benchmark.
 
-| Expert payload | Scheduler P50 (ms) | Scheduler / off | Off P50 (ms) | On P50 (ms) | Migration slowdown |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 4 KiB | 1.205 | 8.57% | 14.06 | 30.14 | 110.77% |
-| 64 KiB | 1.209 | 5.90% | 20.48 | 33.61 | 72.32% |
-| 1 MiB | 1.220 | 1.15% | 106.45 | 137.94 | 31.33% |
-| 9 MiB | 1.202 | 0.138% | 870.31 | 1,056.25 | 23.46% |
-| 64 MiB | 1.191 | 0.020% | 5,903.55 | 7,038.50 | 17.04% |
+| Expert payload | Scheduler P50/P99 (ms) |
+| ---: | ---: |
+| 4 KiB | 1.205 / 1.427 |
+| 64 KiB | 1.209 / 1.434 |
+| 1 MiB | 1.220 / 1.326 |
+| 9 MiB | 1.202 / 1.329 |
+| 64 MiB | 1.191 / 1.420 |
 
-At 9 MiB, the scheduler P99 is 1.329 ms. The greedy grouping itself is only
-0.019 ms P50; most scheduler time is spent constructing the migration
-instructions. The Python cost is therefore small at realistic expert sizes.
-The total migration remains slower because batching intentionally replaces one
-NIXL execute/barrier with six sequential steps. This migration-only result must
-not be presented as serving performance; the async serving tables above measure
-the corresponding reduction in inference interference.
+At 9 MiB, the greedy grouping itself is only 0.019 ms P50; most of the 1.202 ms
+is instruction construction. For Qwen3-30B's 48 layers, multiplying the
+per-layer medians gives about 57.7 ms of background CPU scheduling per complete
+model pass. This work runs in the async migration worker rather than on the
+inference critical path.
+
+The figure places this component cost beside the existing async serving results.
+Those runs improved throughput by 0.23%/1.91%, TPOT P50 by 0.36%/4.96%, TPOT
+P99 by 2.15%/2.16%, and E2EL P50 by 2.30%/2.42% for random/phased workloads.
+The quantities are not directly additive: scheduling is paid per rebalance,
+while serving latency is measured per request.
 
 ![NIXL migration profile](results/nixl_profile_20260904/migration_profile.png)
 
