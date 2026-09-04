@@ -315,8 +315,36 @@ vllm serve "$MODEL" --dtype float16 --port 8000 \
   --enable-eplb --eplb-config "$EPLB_CONFIG" --enforce-eager
 ```
 
-Run the random and phased `vllm bench serve` commands from section 4 without
-changing their prompt, cache, concurrency, or seed settings.
+This profile is decode-heavy while retaining the same prefix cache, concurrency,
+seed, and request structure as section 4. Random uses a 300-token cached prefix,
+100 random input tokens, and 300 output tokens:
+
+```bash
+RESULTS=$HOME/benchmarks/eplb_decode_heavy_profile_20260904/random/$TAG
+vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
+  --dataset-name random --random-prefix-len 300 \
+  --random-input-len 100 --random-output-len 300 \
+  --num-prompts 200 --max-concurrency 32 --seed 0 --temperature 0 \
+  --percentile-metrics ttft,tpot,e2el --metric-percentiles 50,90,95,99 \
+  --ignore-eos --disable-tqdm --save-result \
+  --result-dir "$RESULTS" --result-filename bench.json
+```
+
+Phased English uses the same ordered dataset with 300 output tokens. Its shared
+223-token prefix is cached, making decode longer than the average uncached
+prompt suffix:
+
+```bash
+RESULTS=$HOME/benchmarks/eplb_decode_heavy_profile_20260904/phased/$TAG
+vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
+  --dataset-name custom \
+  --dataset-path benchmarks/eplb_rebalance/bench_dataset/eplb_phased_english_256.jsonl \
+  --disable-shuffle --custom-output-len 300 --num-prompts 256 \
+  --max-concurrency 32 --seed 0 --temperature 0 \
+  --percentile-metrics ttft,tpot,e2el --metric-percentiles 50,90,95,99 \
+  --ignore-eos --disable-tqdm --save-result \
+  --result-dir "$RESULTS" --result-filename bench.json
+```
 
 For rank 0, the measured cumulative scheduler cost is:
 
@@ -339,36 +367,37 @@ async worker are processed sequentially.
 
 | Workload | Layer migrations | Expert migrations | Actual build (ms) | Actual greedy (ms) | Actual total (ms) | Serving time saved (ms) | Ratio |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Random | 212 | 21,347 | 1,062.57 | 21.34 | 1,083.91 | -450.95 | N/A |
-| Phased English | 209 | 21,222 | 997.79 | 20.17 | 1,017.96 | 12,532.52 | 8.12% |
+| Random | 581 | 58,087 | 2,665.86 | 54.54 | 2,720.40 | 16,516.61 | 16.47% |
+| Phased English | 715 | 71,930 | 3,302.26 | 67.79 | 3,370.06 | 18,023.51 | 18.70% |
 
 | Workload | Build P50/P99 (ms/layer) | Greedy P50/P99 (ms/layer) | Total P50/P99 (ms/layer) |
 | --- | ---: | ---: | ---: |
-| Random | 4.802 / 8.045 | 0.092 / 0.237 | 4.892 / 8.298 |
-| Phased English | 4.551 / 8.426 | 0.091 / 0.199 | 4.642 / 8.563 |
+| Random | 4.550 / 6.396 | 0.092 / 0.187 | 4.642 / 6.558 |
+| Phased English | 4.532 / 6.934 | 0.092 / 0.184 | 4.625 / 7.026 |
 
-| Workload | Batching | Duration (s) | Output (tok/s) | TTFT P50/P99 (ms) | TPOT P50/P99 (ms) | E2EL P50/P99 (ms) |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Random | off | 905.61 | 22.08 | 44,471.04 / 84,429.71 | 950.87 / 1,358.91 | 139,600.41 / 165,185.00 |
-| Random | on | 906.06 | 22.07 | 44,969.64 / 84,539.74 | 953.07 / 1,366.07 | 139,543.17 / 164,971.26 |
-| Phased English | off | 838.21 | 30.54 | 39,630.66 / 60,866.05 | 683.17 / 1,025.31 | 104,776.95 / 109,623.15 |
-| Phased English | on | 825.68 | 31.00 | 39,551.25 / 61,213.48 | 654.56 / 1,003.99 | 102,964.56 / 106,507.91 |
+| Workload | Batching | Duration (s) | Output (tok/s) | TTFT P50/P99 (ms) | TPOT P50/P99 (ms) | E2EL P50/P99 (ms) | NIC P50/P99 (MB/s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Random | off | 1,477.06 | 40.62 | 29,527.69 / 48,974.57 | 643.33 / 739.85 | 226,424.72 / 245,971.44 | 326.16 / 612.64 |
+| Random | on | 1,460.55 | 41.08 | 28,349.50 / 49,011.03 | 636.05 / 733.68 | 220,476.67 / 239,381.28 | 303.75 / 557.49 |
+| Phased English | off | 1,881.73 | 40.81 | 40,121.61 / 61,353.68 | 664.38 / 771.42 | 234,392.34 / 243,767.48 | 309.15 / 622.73 |
+| Phased English | on | 1,863.70 | 41.21 | 40,772.27 / 61,312.64 | 652.64 / 769.51 | 232,600.56 / 238,811.64 | 296.19 / 568.28 |
 
-Random changed total serving time by only -0.05%, producing no positive saving
-and therefore no meaningful ratio. On phased English, batching saved 12.53 s;
-the directly measured 1.02 s of build plus greedy work was 8.12% of that saving.
-The in-serving per-layer times are higher than the isolated microbenchmark
-because they include real CPU contention while the server is active.
-This profile A/B is independent of the main benchmark in section 5, so small
-run-to-run differences are expected; the phased workload improves in both.
+Batching improved random and phased throughput by 1.13% and 0.97%, respectively.
+It reduced random TPOT P50/P99 by 1.14%/0.84% and phased TPOT P50/P99 by
+1.80%/0.25%. Actual build plus greedy cost was 16.47% and 18.70% of the serving
+time saved. The in-serving per-layer times are higher than the isolated
+microbenchmark because they include real CPU contention while serving.
 
-![Scheduler cost and benefit](results/nixl_scheduler_scaling_20260904/scheduler_cost_benefit.png)
+![Scheduler cost and benefit](results/decode_heavy_profile_20260904/scheduler_cost_benefit.png)
 
 The scaling JSON and logs are in `results/nixl_scheduler_scaling_20260904/`.
 The actual serving JSON and raw logs are in
-`results/async_profile_20260904/`. Regenerate the tables and figure with:
+`results/decode_heavy_profile_20260904/`. Regenerate the CSV files and figure
+with:
 
 ```bash
 .venv/bin/python benchmarks/eplb_rebalance/analyze_scheduler_scaling.py \
-  benchmarks/eplb_rebalance/results/nixl_scheduler_scaling_20260904
+  benchmarks/eplb_rebalance/results/nixl_scheduler_scaling_20260904 \
+  --serving-dir benchmarks/eplb_rebalance/results/decode_heavy_profile_20260904 \
+  --output-dir benchmarks/eplb_rebalance/results/decode_heavy_profile_20260904
 ```

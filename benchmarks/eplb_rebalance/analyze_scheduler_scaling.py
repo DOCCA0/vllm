@@ -16,6 +16,8 @@ import regex as re
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("result_dir", type=Path)
+    parser.add_argument("--serving-dir", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     return parser.parse_args()
 
 
@@ -51,8 +53,7 @@ def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer.writerows(rows)
 
 
-def measure_cost_benefit(result_dir: Path) -> list[dict[str, Any]]:
-    serving_dir = result_dir.parent / "async_profile_20260904"
+def measure_cost_benefit(serving_dir: Path) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     pattern = re.compile(
         r"EPLB migration stats:.*?transfers=(\d+).*?"
@@ -63,12 +64,16 @@ def measure_cost_benefit(result_dir: Path) -> list[dict[str, Any]]:
         off = json.loads(
             (workload_dir / "00_async_off_clean" / "bench.json").read_text()
         )
-        on = json.loads(
-            (workload_dir / "02_async_batching_on" / "bench.json").read_text()
+        on_dir = next(
+            path
+            for path in (
+                workload_dir / "01_async_batching_on",
+                workload_dir / "02_async_batching_on",
+            )
+            if path.exists()
         )
-        log = (workload_dir / "02_async_batching_on" / "server.log").read_text(
-            errors="replace"
-        )
+        on = json.loads((on_dir / "bench.json").read_text())
+        log = (on_dir / "server.log").read_text(errors="replace")
         timings = [tuple(map(int, match)) for match in pattern.findall(log)]
         migrations = [timing[0] for timing in timings]
         build_ms = [timing[1] / 1e6 for timing in timings]
@@ -170,16 +175,21 @@ def plot(
 
 def main() -> None:
     args = parse_args()
+    serving_dir = args.serving_dir or (
+        args.result_dir.parent / "async_profile_20260904"
+    )
+    output_dir = args.output_dir or args.result_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
     rows = sorted(
         (summarize_profile(path) for path in (args.result_dir / "raw").glob("*.json")),
         key=lambda row: row["migrations"],
     )
     if not rows:
         raise RuntimeError(f"No JSON files found in {args.result_dir / 'raw'}")
-    write_csv(rows, args.result_dir / "scheduler_scaling.csv")
-    cost_benefit = measure_cost_benefit(args.result_dir)
-    write_csv(cost_benefit, args.result_dir / "cost_benefit.csv")
-    plot(rows, cost_benefit, args.result_dir / "scheduler_cost_benefit.png")
+    write_csv(rows, output_dir / "scheduler_scaling.csv")
+    cost_benefit = measure_cost_benefit(serving_dir)
+    write_csv(cost_benefit, output_dir / "cost_benefit.csv")
+    plot(rows, cost_benefit, output_dir / "scheduler_cost_benefit.png")
 
 
 if __name__ == "__main__":
