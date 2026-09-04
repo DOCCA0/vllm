@@ -240,65 +240,41 @@ its batching overhead reduced throughput in both workloads.
 as the constant value six. These runs happened to produce six batches per
 layer when batching was enabled.
 
-## 6. Scheduler Profiling
+## 6. Trace-based Scheduler Profiling
 
-This profile measures how Python scheduling cost scales with the number of
-expert migrations. It fixes the topology at four ranks, 32 physical slots per
-rank, 12 directed rank-pair flows, six batches, and 9 MiB per expert. Each point
-has 500 scheduler repetitions; the raw files also retain ten alternating
-off/on NIXL migrations after two warmups.
+The old instruction builder scanned the whole placement once per expert. The
+optimized builder creates expert-to-rank maps in two linear passes. Both paths
+produce identical instructions in 25,000 randomized placement checks.
 
-Each timing sample is one scheduler call on one rank for one migrated layer:
-one instruction build followed by one greedy grouping call. The P50/P99 values
-below and in the left plot are milliseconds per call, not cumulative benchmark
-time.
-
-Run the following command on all four nodes, changing `NODE_RANK` from 0 to 3.
-Repeat it with `MIGRATIONS_PER_FLOW=1,2,4,6,8,10`.
+The profile replays six real four-rank placements, with 12 to 120 expert
+migrations per scheduler call. After 50 warmups, each point has 500 repetitions.
+All values come from PyTorch profiler events, not logging timers.
 
 ```bash
-NODE_RANK=0
-EXPERT_BYTES=9437184
-MIGRATIONS_PER_FLOW=1
-
-cd ~/vllm-ilp
-export LD_LIBRARY_PATH=$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13/lib
-export NCCL_IB_DISABLE=1 NCCL_SOCKET_FAMILY=AF_INET
-export NCCL_SOCKET_IFNAME=eno2 GLOO_SOCKET_IFNAME=eno2
-export UCX_TLS=all UCX_NET_DEVICES=eno2 UCX_RCACHE_MAX_UNRELEASED=1024
-
-.venv/bin/python -m torch.distributed.run --nnodes=4 --nproc-per-node=1 \
-  --node-rank=$NODE_RANK --master-addr=10.31.0.89 --master-port=29606 \
-  benchmarks/eplb_rebalance/profile_nixl_migration.py \
-  --expert-bytes=$EXPERT_BYTES \
-  --migrations-per-flow=$MIGRATIONS_PER_FLOW \
-  --warmup=2 --repeats=10 \
-  --scheduler-repeats=500 --output=$HOME/profile.json
+.venv/bin/python benchmarks/eplb_rebalance/profile_scheduler_trace.py \
+  benchmarks/eplb_rebalance/results/nixl_scheduler_scaling_20260904/raw \
+  --warmup 50 --repeats 500 \
+  --trace scheduler_before_after.pt.trace.json \
+  --summary summary.csv
 ```
 
-Qwen3-30B-A3B has `hidden_size=2048` and
-`moe_intermediate_size=768`. Its two FP16 expert matrices total exactly 9 MiB
-per expert, so the 9 MiB point matches the model used by the serving benchmark.
+| Migrations/call | Previous build P50/P99 (ms/call) | Optimized build P50/P99 (ms/call) | Greedy P50/P99 (ms/call) | Build speedup |
+| ---: | ---: | ---: | ---: | ---: |
+| 12 | 1.190 / 1.318 | 0.100 / 0.130 | 0.018 / 0.033 | 11.85x |
+| 24 | 1.193 / 1.321 | 0.114 / 0.137 | 0.020 / 0.035 | 10.44x |
+| 48 | 1.230 / 1.368 | 0.143 / 0.170 | 0.023 / 0.039 | 8.59x |
+| 72 | 1.288 / 1.412 | 0.173 / 0.212 | 0.027 / 0.043 | 7.46x |
+| 96 | 1.319 / 2.057 | 0.202 / 0.474 | 0.030 / 0.060 | 6.53x |
+| 120 | 1.360 / 2.761 | 0.230 / 0.489 | 0.034 / 0.068 | 5.92x |
 
-| Migrations/call | Build P50/P99 (ms/call) | Greedy P50/P99 (ms/call) | Total P50/P99 (ms/call) |
-| ---: | ---: | ---: | ---: |
-| 12 | 1.050 / 1.188 | 0.008 / 0.019 | 1.058 / 1.197 |
-| 24 | 1.063 / 1.179 | 0.010 / 0.015 | 1.073 / 1.191 |
-| 48 | 1.106 / 1.599 | 0.013 / 0.020 | 1.119 / 1.618 |
-| 72 | 1.151 / 1.339 | 0.016 / 0.026 | 1.167 / 1.357 |
-| 96 | 1.211 / 1.472 | 0.018 / 0.034 | 1.229 / 1.493 |
-| 120 | 1.231 / 1.376 | 0.021 / 0.033 | 1.253 / 1.402 |
+The compressed Chrome trace and its CSV summary are in
+`results/scheduler_trace_optimized_20260904/`.
 
-Instruction construction includes a scan of the fixed 128-expert placement,
-while greedy grouping grows with the migration count. The total P50 increased
-by only 0.195 ms from 12 to 120 migrations.
+## 7. Decode-heavy Async Serving after Optimization
 
-### Actual async serving profile
-
-The cost/benefit ratio uses a separate real serving A/B rather than interpolated
-microbenchmark timings. Both runs use the same server command as the end-to-end
-benchmark. For clean off, set `USE_BATCHING=false` and
-`VLLM_EPLB_LOG_MIGRATION_STATS=0`. For profiled on, set both to `true`/`1`:
+The serving A/B uses NIXL, prefix caching, and the same model and EPLB settings
+as the earlier benchmark. Profiling and migration-stat logging are disabled for
+both sides of the A/B.
 
 ```bash
 cd ~/vllm-ilp
@@ -307,7 +283,7 @@ export LD_LIBRARY_PATH=$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13/lib
 export NCCL_IB_DISABLE=1 NCCL_SOCKET_FAMILY=AF_INET
 export NCCL_SOCKET_IFNAME=eno2 GLOO_SOCKET_IFNAME=eno2
 export UCX_TLS=all UCX_NET_DEVICES=eno2 UCX_RCACHE_MAX_UNRELEASED=1024
-export VLLM_EPLB_LOG_MIGRATION_STATS=1
+export VLLM_EPLB_LOG_MIGRATION_STATS=0
 
 MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 USE_BATCHING=true
@@ -320,12 +296,10 @@ vllm serve "$MODEL" --dtype float16 --port 8000 \
   --enable-eplb --eplb-config "$EPLB_CONFIG" --enforce-eager
 ```
 
-This profile is decode-heavy while retaining the same prefix cache, concurrency,
-seed, and request structure as section 4. Random uses a 300-token cached prefix,
-100 random input tokens, and 300 output tokens:
+Random workload: 300 cached-prefix tokens, 100 random input tokens, and 300
+output tokens.
 
 ```bash
-RESULTS=$HOME/benchmarks/eplb_decode_heavy_profile_20260904/random/$TAG
 vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
   --dataset-name random --random-prefix-len 300 \
   --random-input-len 100 --random-output-len 300 \
@@ -335,12 +309,10 @@ vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
   --result-dir "$RESULTS" --result-filename bench.json
 ```
 
-Phased English uses the same ordered dataset with 300 output tokens. Its shared
-223-token prefix is cached, making decode longer than the average uncached
-prompt suffix:
+Ordered phased-English workload: 256 prompts in eight 32-request phases and
+300 output tokens.
 
 ```bash
-RESULTS=$HOME/benchmarks/eplb_decode_heavy_profile_20260904/phased/$TAG
 vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
   --dataset-name custom \
   --dataset-path benchmarks/eplb_rebalance/bench_dataset/eplb_phased_english_256.jsonl \
@@ -351,59 +323,27 @@ vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
   --result-dir "$RESULTS" --result-filename bench.json
 ```
 
-For rank 0, the measured cumulative scheduler cost is:
-
-$$
-C_{\mathrm{actual}} = \sum_i
-\left(t_{\mathrm{build},i} + t_{\mathrm{greedy},i}\right)
-$$
-
-$$
-S = \left(D_{\mathrm{async,off}} - D_{\mathrm{async,on}}\right) \times 1000
-$$
-
-$$
-R = \frac{C_{\mathrm{actual}}}{S} \times 100\%, \qquad S > 0.
-$$
-
-The four ranks execute the same scheduler concurrently, so this uses one
-representative rank and does not sum or divide by four. Each migrated layer
-causes one scheduler call; calls within that rank's async worker are processed
-sequentially.
-
-| Workload | Layer migrations | Expert migrations | Actual build (ms) | Actual greedy (ms) | Actual total (ms) | Serving time saved (ms) | Ratio |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Random | 581 | 58,087 | 2,665.86 | 54.54 | 2,720.40 | 16,516.61 | 16.47% |
-| Phased English | 715 | 71,930 | 3,302.26 | 67.79 | 3,370.06 | 18,023.51 | 18.70% |
-
-| Workload | Build P50/P99 (ms/call) | Greedy P50/P99 (ms/call) | Total P50/P99 (ms/call) |
-| --- | ---: | ---: | ---: |
-| Random | 4.550 / 6.396 | 0.092 / 0.187 | 4.642 / 6.558 |
-| Phased English | 4.532 / 6.934 | 0.092 / 0.184 | 4.625 / 7.026 |
-
 | Workload | Batching | Duration (s) | Output (tok/s) | TTFT P50/P99 (ms) | TPOT P50/P99 (ms) | E2EL P50/P99 (ms) | NIC P50/P99 (MB/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Random | off | 1,477.06 | 40.62 | 29,527.69 / 48,974.57 | 643.33 / 739.85 | 226,424.72 / 245,971.44 | 326.16 / 612.64 |
-| Random | on | 1,460.55 | 41.08 | 28,349.50 / 49,011.03 | 636.05 / 733.68 | 220,476.67 / 239,381.28 | 303.75 / 557.49 |
-| Phased English | off | 1,881.73 | 40.81 | 40,121.61 / 61,353.68 | 664.38 / 771.42 | 234,392.34 / 243,767.48 | 309.15 / 622.73 |
-| Phased English | on | 1,863.70 | 41.21 | 40,772.27 / 61,312.64 | 652.64 / 769.51 | 232,600.56 / 238,811.64 | 296.19 / 568.28 |
+| Random | off | 1,497.12 | 40.08 | 28,648.48 / 44,882.28 | 644.36 / 745.12 | 225,242.20 / 242,171.79 | 318.63 / 614.19 |
+| Random | on | 1,451.72 | 41.33 | 28,654.62 / 44,905.56 | 623.78 / 724.31 | 221,688.07 / 241,318.74 | 302.00 / 544.35 |
+| Phased English | off | 1,900.04 | 40.42 | 40,638.24 / 61,215.13 | 672.59 / 784.28 | 238,039.94 / 244,282.08 | 304.44 / 631.64 |
+| Phased English | on | 1,860.68 | 41.28 | 40,854.71 / 63,011.10 | 648.95 / 768.27 | 232,741.74 / 238,833.92 | 304.59 / 563.64 |
 
-Batching improved random and phased throughput by 1.13% and 0.97%, respectively.
-It reduced random TPOT P50/P99 by 1.14%/0.84% and phased TPOT P50/P99 by
-1.80%/0.25%. Actual build plus greedy cost was 16.47% and 18.70% of the serving
-time saved. The in-serving per-layer times are higher than the isolated
-microbenchmark because they include real CPU contention while serving.
+Batching improved output throughput by 3.13%/2.12%, TPOT P50 by 3.19%/3.51%,
+TPOT P99 by 2.79%/2.04%, and E2EL P50 by 1.58%/2.23% for random/phased.
+NIC P99 fell by 11.37%/10.77%. Random TTFT was unchanged; phased TTFT P50/P99
+regressed by 0.53%/2.93%.
 
-![Scheduler cost and benefit](results/decode_heavy_profile_20260904/scheduler_cost_benefit.png)
+![Optimized scheduler and serving results](results/eplb_decode_heavy_optimized_20260904/optimized_scheduler_and_serving.png)
 
-The scaling JSON and logs are in `results/nixl_scheduler_scaling_20260904/`.
-The actual serving JSON and raw logs are in
-`results/decode_heavy_profile_20260904/`. Regenerate the CSV files and figure
-with:
+All unmodified bench JSON, warmup JSON, server logs, bench logs, configs, and NIC
+samples are in `results/eplb_decode_heavy_optimized_20260904/`. Regenerate the
+summary and plot with:
 
 ```bash
-.venv/bin/python benchmarks/eplb_rebalance/analyze_scheduler_scaling.py \
-  benchmarks/eplb_rebalance/results/nixl_scheduler_scaling_20260904 \
-  --serving-dir benchmarks/eplb_rebalance/results/decode_heavy_profile_20260904 \
-  --output-dir benchmarks/eplb_rebalance/results/decode_heavy_profile_20260904
+.venv/bin/python benchmarks/eplb_rebalance/analyze_optimized_profile.py \
+  benchmarks/eplb_rebalance/results/scheduler_trace_optimized_20260904/summary.csv \
+  benchmarks/eplb_rebalance/results/eplb_decode_heavy_optimized_20260904 \
+  benchmarks/eplb_rebalance/results/eplb_decode_heavy_optimized_20260904
 ```
