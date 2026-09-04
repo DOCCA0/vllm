@@ -1,0 +1,13 @@
+INFO 09-04 02:50:35 [scheduler.py:246] Chunked prefill is enabled with max_num_batched_tokens=2048.
+INFO 09-04 02:50:35 [kernel.py:369] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+INFO 09-04 02:50:35 [parallel_state.py:1775] world_size=4 rank=2 local_rank=0 distributed_init_method=env:// backend=nccl
+<frozen importlib._bootstrap_external>:1301: FutureWarning: The cuda.cudart module is deprecated and will be removed in a future release, please switch to use the cuda.bindings.runtime module instead.
+<frozen importlib._bootstrap_external>:1301: FutureWarning: The cuda.nvrtc module is deprecated and will be removed in a future release, please switch to use the cuda.bindings.nvrtc module instead.
+WARNING 09-04 02:50:37 [symm_mem.py:67] SymmMemCommunicator: Device capability 7.5 not supported, communicator is not available.
+WARNING 09-04 02:50:37 [flashinfer_all_reduce.py:383] FlashInfer All Reduce is disabled because it is not supported for world_size=4.
+WARNING 09-04 02:50:37 [custom_all_reduce.py:201] Custom collectives are disabled because this multi-node group does not have MNNVL-capable GPUs on every rank.
+INFO 09-04 02:50:37 [parallel_state.py:2119] rank 2 in world size 4 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 2, EP rank 2, EPLB rank N/A
+INFO 09-04 02:50:38 [nixl_utils.py:72] NIXL is available
+2026-09-04 02:50:39 NIXL INFO    _api.py:390 Backend UCX was instantiated
+2026-09-04 02:50:39 NIXL INFO    _api.py:268 Initialized NIXL agent: eplb-2-d4b73f0d
+INFO 09-04 02:50:39 [eplb_communicator.py:96] Initialized EPLB communicator: NixlEplbCommunicator.

@@ -239,3 +239,61 @@ its batching overhead reduced throughput in both workloads.
 `batches` is calculated from each layer's migration graph; it is not configured
 as the constant value six. These runs happened to produce six batches per
 layer when batching was enabled.
+
+## 6. Migration Profiling
+
+This profile isolates NIXL migration; it does not run inference or repeat the
+serving benchmark. It uses 32 physical slots per rank, 102 remote transfers,
+12 directed rank-pair flows, and six scheduled batches. Each point alternates
+batching off/on for ten measured repetitions after two warmups. Reported
+migration latency is the slowest rank in each repetition.
+
+Run the following command on all four nodes, changing `NODE_RANK` from 0 to 3.
+Repeat it for each payload size.
+
+```bash
+NODE_RANK=0
+EXPERT_BYTES=9437184
+
+cd ~/vllm-ilp
+export LD_LIBRARY_PATH=$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13/lib
+export NCCL_IB_DISABLE=1 NCCL_SOCKET_FAMILY=AF_INET
+export NCCL_SOCKET_IFNAME=eno2 GLOO_SOCKET_IFNAME=eno2
+export UCX_TLS=all UCX_NET_DEVICES=eno2 UCX_RCACHE_MAX_UNRELEASED=1024
+
+.venv/bin/python -m torch.distributed.run --nnodes=4 --nproc-per-node=1 \
+  --node-rank=$NODE_RANK --master-addr=10.31.0.89 --master-port=29606 \
+  benchmarks/eplb_rebalance/profile_nixl_migration.py \
+  --expert-bytes=$EXPERT_BYTES --warmup=2 --repeats=10 \
+  --scheduler-repeats=500 --output=$HOME/profile.json
+```
+
+Qwen3-30B-A3B has `hidden_size=2048` and
+`moe_intermediate_size=768`. Its two FP16 expert matrices total exactly 9 MiB
+per expert, so the 9 MiB point matches the model used by the serving benchmark.
+
+| Expert payload | Scheduler P50 (ms) | Scheduler / off | Off P50 (ms) | On P50 (ms) | Migration slowdown |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 KiB | 1.205 | 8.57% | 14.06 | 30.14 | 110.77% |
+| 64 KiB | 1.209 | 5.90% | 20.48 | 33.61 | 72.32% |
+| 1 MiB | 1.220 | 1.15% | 106.45 | 137.94 | 31.33% |
+| 9 MiB | 1.202 | 0.138% | 870.31 | 1,056.25 | 23.46% |
+| 64 MiB | 1.191 | 0.020% | 5,903.55 | 7,038.50 | 17.04% |
+
+At 9 MiB, the scheduler P99 is 1.329 ms. The greedy grouping itself is only
+0.019 ms P50; most scheduler time is spent constructing the migration
+instructions. The Python cost is therefore small at realistic expert sizes.
+The total migration remains slower because batching intentionally replaces one
+NIXL execute/barrier with six sequential steps. This migration-only result must
+not be presented as serving performance; the async serving tables above measure
+the corresponding reduction in inference interference.
+
+![NIXL migration profile](results/nixl_profile_20260904/migration_profile.png)
+
+The nine unmodified JSON files, all 36 rank logs, and the generated CSV are in
+`results/nixl_profile_20260904/`. Regenerate the table and figure with:
+
+```bash
+.venv/bin/python benchmarks/eplb_rebalance/analyze_nixl_profile.py \
+  benchmarks/eplb_rebalance/results/nixl_profile_20260904
+```
