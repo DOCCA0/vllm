@@ -54,16 +54,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=10)
     parser.add_argument("--scheduler-repeats", type=int, default=500)
+    parser.add_argument(
+        "--migrations-per-flow",
+        type=int,
+        help=(
+            "Move this many experts on each of the 12 directed rank-pair "
+            "flows. If omitted, use a seeded random placement."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
 
 def make_placement(
-    world_size: int, num_local_experts: int, seed: int
+    world_size: int,
+    num_local_experts: int,
+    seed: int,
+    migrations_per_flow: int | None,
 ) -> tuple[np.ndarray, np.ndarray]:
     num_experts = world_size * num_local_experts
     old_indices = np.arange(num_experts, dtype=np.int64)
+    if migrations_per_flow is not None:
+        if migrations_per_flow < 1:
+            raise ValueError("migrations-per-flow must be positive")
+        if migrations_per_flow * (world_size - 1) > num_local_experts:
+            raise ValueError("migrations-per-flow exceeds the available slots")
+        new_indices = old_indices.copy()
+        next_slot = [0] * world_size
+        for src_rank in range(world_size):
+            for dst_rank in range(src_rank + 1, world_size):
+                src_start = src_rank * num_local_experts + next_slot[src_rank]
+                dst_start = dst_rank * num_local_experts + next_slot[dst_rank]
+                src_slice = slice(src_start, src_start + migrations_per_flow)
+                dst_slice = slice(dst_start, dst_start + migrations_per_flow)
+                new_indices[src_slice] = old_indices[dst_slice]
+                new_indices[dst_slice] = old_indices[src_slice]
+                next_slot[src_rank] += migrations_per_flow
+                next_slot[dst_rank] += migrations_per_flow
+        return old_indices, new_indices
+
     for candidate_seed in range(seed, seed + 10_000):
         new_indices = np.random.default_rng(candidate_seed).permutation(old_indices)
         instructions = build_migration_instructions(
@@ -187,7 +217,10 @@ def main() -> None:
         cpu_group = get_world_group().cpu_group
 
         old_indices, new_indices = make_placement(
-            world_size, args.num_local_experts, args.seed
+            world_size,
+            args.num_local_experts,
+            args.seed,
+            args.migrations_per_flow,
         )
         instructions = build_migration_instructions(
             args.num_local_experts, old_indices, new_indices
@@ -277,6 +310,7 @@ def main() -> None:
                 "warmup": args.warmup,
                 "repeats": args.repeats,
                 "scheduler_repeats": args.scheduler_repeats,
+                "migrations_per_flow": args.migrations_per_flow,
                 "num_instructions": len(instructions),
                 "num_flows": len(
                     {(item.src_rank, item.dst_rank) for item in instructions}
