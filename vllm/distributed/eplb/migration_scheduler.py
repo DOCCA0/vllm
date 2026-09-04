@@ -16,11 +16,15 @@ class MigrationInstruction:
     expert_id: int
 
 
-def _ranks_with_expert(
-    indices: np.ndarray, expert_id: int, num_local_experts: int
-) -> list[int]:
-    positions = np.flatnonzero(indices == expert_id)
-    return sorted({int(pos // num_local_experts) for pos in positions})
+def _map_experts_to_ranks(
+    indices: np.ndarray, num_local_experts: int
+) -> dict[int, list[int]]:
+    ranks_by_expert: dict[int, list[int]] = {}
+    for rank, local_experts in enumerate(indices.reshape(-1, num_local_experts)):
+        for expert_id in set(local_experts.tolist()):
+            if expert_id != -1:
+                ranks_by_expert.setdefault(expert_id, []).append(rank)
+    return ranks_by_expert
 
 
 def build_migration_instructions(
@@ -30,20 +34,14 @@ def build_migration_instructions(
 ) -> list[MigrationInstruction]:
     """Build the deterministic remote transfers for an expert remapping."""
     assert old_indices.shape == new_indices.shape
-    old_experts = old_indices[old_indices != -1]
-    new_experts = new_indices[new_indices != -1]
-    if old_experts.size == 0 and new_experts.size == 0:
-        return []
-
-    expert_ids = np.unique(np.concatenate((old_experts, new_experts)))
+    old_ranks_by_expert = _map_experts_to_ranks(old_indices, num_local_experts)
+    new_ranks_by_expert = _map_experts_to_ranks(new_indices, num_local_experts)
     instructions: list[MigrationInstruction] = []
-    for expert_id in expert_ids.tolist():
-        send_ranks = _ranks_with_expert(old_indices, int(expert_id), num_local_experts)
+    for expert_id in sorted(old_ranks_by_expert.keys() | new_ranks_by_expert.keys()):
+        send_ranks = old_ranks_by_expert.get(expert_id, [])
         recv_ranks = [
             rank
-            for rank in _ranks_with_expert(
-                new_indices, int(expert_id), num_local_experts
-            )
+            for rank in new_ranks_by_expert.get(expert_id, [])
             if rank not in send_ranks
         ]
         if not send_ranks or not recv_ranks:
@@ -57,7 +55,7 @@ def build_migration_instructions(
             if sender_idx < remainder:
                 assigned_ranks.append(recv_ranks[remainder_start + sender_idx])
             instructions.extend(
-                MigrationInstruction(src_rank, dst_rank, int(expert_id))
+                MigrationInstruction(src_rank, dst_rank, expert_id)
                 for dst_rank in assigned_ranks
             )
 
