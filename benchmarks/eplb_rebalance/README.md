@@ -359,6 +359,8 @@ and therefore no meaningful ratio. On phased English, batching saved 12.53 s;
 the directly measured 1.02 s of build plus greedy work was 8.12% of that saving.
 The in-serving per-layer times are higher than the isolated microbenchmark
 because they include real CPU contention while the server is active.
+This profile A/B is independent of the main benchmark in section 5, so small
+run-to-run differences are expected; the phased workload improves in both.
 
 ![Scheduler cost and benefit](results/nixl_scheduler_scaling_20260904/scheduler_cost_benefit.png)
 
