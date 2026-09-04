@@ -1,0 +1,3 @@
+workload,layer_migrations,expert_migrations,min_migrations_per_layer,max_migrations_per_layer,serving_time_saved_ms,scheduler_p50_ms,scheduler_p99_ms,overhead_ratio_p50_pct,overhead_ratio_p99_pct
+random,215,21669,84,114,2063.166258005367,265.06663,315.87220473833275,12.847565191196066,15.310070311236693
+phased,213,21480,80,121,15674.221503999433,262.50703550000014,312.2831627174994,1.6747692090035786,1.9923360317309364
