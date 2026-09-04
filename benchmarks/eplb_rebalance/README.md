@@ -292,11 +292,28 @@ For a like-for-like cost comparison, the analysis reads the migration count of
 every layer from the existing async batching-on server logs, interpolates the
 measured P50 scheduler cost, and sums it over the full benchmark:
 
-```text
-C = sum_i interpolate(P50(build + greedy), expert_migrations_i)
-S = (async_off_duration - async_on_duration) * 1000
-overhead_ratio = C / S * 100%
-```
+$$
+C_{\mathrm{sched}} = \sum_i
+T_{50}\!\left(m_i\right)
+$$
+
+Here, $m_i$ is the number of expert migrations in layer migration $i$, and
+$T_{50}(m_i)$ is the interpolated P50 instruction-build plus greedy-grouping
+time. The serving time saved and cost-to-saving ratio are:
+
+$$
+S = \left(D_{\mathrm{async,off}} - D_{\mathrm{async,on}}\right) \times 1000
+$$
+
+$$
+R = \frac{C_{\mathrm{sched}}}{S} \times 100\%.
+$$
+
+All four ranks schedule concurrently. The profile pools individual per-rank
+timings rather than summing them, so $C_{\mathrm{sched}}$ already represents a
+typical rank's cumulative time and must not be divided by four again. If total
+cluster CPU work were summed first, ideal four-rank parallelism would give
+$C_{\mathrm{cluster}} / 4 \approx C_{\mathrm{sched}}$.
 
 | Workload | Layer migrations | Expert migrations | Build + greedy P50 estimate (ms) | Serving time saved (ms) | Overhead ratio |
 | --- | ---: | ---: | ---: | ---: | ---: |

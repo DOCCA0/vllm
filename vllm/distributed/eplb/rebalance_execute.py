@@ -8,6 +8,7 @@ This involves the exchange of expert weights between GPUs.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from time import perf_counter_ns
 
 import numpy as np
 import torch
@@ -34,6 +35,7 @@ def _log_migration_stats(
     old_indices: np.ndarray,
     ep_rank: int,
     layer_idx: int,
+    scheduler_timing_ns: tuple[int, int] | None = None,
 ) -> None:
     if ep_rank != 0 or not instructions:
         return
@@ -44,9 +46,11 @@ def _log_migration_stats(
         counts[instruction.dst_rank] += 1
     mean = float(counts.mean())
     flows = {(item.src_rank, item.dst_rank) for item in instructions}
-    logger.info(
+    message = (
         "EPLB migration stats: layer=%d transfers=%d flows=%d batches=%d "
-        "per-rank peak=%d mean=%.1f hotspot_ratio=%.2f",
+        "per-rank peak=%d mean=%.1f hotspot_ratio=%.2f"
+    )
+    values = (
         layer_idx,
         len(instructions),
         len(flows),
@@ -55,6 +59,16 @@ def _log_migration_stats(
         mean,
         float(counts.max()) / mean if mean else 1.0,
     )
+    if scheduler_timing_ns is not None:
+        logger.info(
+            "EPLB migration stats: layer=%d transfers=%d flows=%d batches=%d "
+            "per-rank peak=%d mean=%.1f hotspot_ratio=%.2f "
+            "build_ns=%d greedy_ns=%d",
+            *values,
+            *scheduler_timing_ns,
+        )
+    else:
+        logger.info(message, *values)
 
 
 @dataclass
@@ -264,10 +278,13 @@ def _execute_migration_batches(
     layer_idx: int,
 ) -> None:
     """Execute all contention-aware migration batches for one layer."""
+    build_start_ns = perf_counter_ns()
     instructions = build_migration_instructions(
         num_local_experts, old_indices, new_indices
     )
+    build_end_ns = perf_counter_ns()
     batches = schedule_migration_batches(instructions)
+    schedule_end_ns = perf_counter_ns()
     if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
         _log_migration_stats(
             instructions,
@@ -276,6 +293,7 @@ def _execute_migration_batches(
             old_indices,
             ep_rank,
             layer_idx,
+            (build_end_ns - build_start_ns, schedule_end_ns - build_end_ns),
         )
     for batch in batches:
         _execute_migration_batch(
