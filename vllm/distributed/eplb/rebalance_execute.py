@@ -279,11 +279,13 @@ def _execute_migration_batches(
 ) -> None:
     """Execute all contention-aware migration batches for one layer."""
     build_start_ns = perf_counter_ns()
-    instructions = build_migration_instructions(
-        num_local_experts, old_indices, new_indices
-    )
+    with torch.profiler.record_function("eplb: build migration instructions"):
+        instructions = build_migration_instructions(
+            num_local_experts, old_indices, new_indices
+        )
     build_end_ns = perf_counter_ns()
-    batches = schedule_migration_batches(instructions)
+    with torch.profiler.record_function("eplb: greedy migration grouping"):
+        batches = schedule_migration_batches(instructions)
     schedule_end_ns = perf_counter_ns()
     if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
         _log_migration_stats(
