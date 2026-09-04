@@ -248,6 +248,11 @@ rank, 12 directed rank-pair flows, six batches, and 9 MiB per expert. Each point
 has 500 scheduler repetitions; the raw files also retain ten alternating
 off/on NIXL migrations after two warmups.
 
+Each timing sample is one scheduler call on one rank for one migrated layer:
+one instruction build followed by one greedy grouping call. The P50/P99 values
+below and in the left plot are milliseconds per call, not cumulative benchmark
+time.
+
 Run the following command on all four nodes, changing `NODE_RANK` from 0 to 3.
 Repeat it with `MIGRATIONS_PER_FLOW=1,2,4,6,8,10`.
 
@@ -275,7 +280,7 @@ Qwen3-30B-A3B has `hidden_size=2048` and
 `moe_intermediate_size=768`. Its two FP16 expert matrices total exactly 9 MiB
 per expert, so the 9 MiB point matches the model used by the serving benchmark.
 
-| Migrations/layer | Build P50/P99 (ms) | Greedy P50/P99 (ms) | Total P50/P99 (ms) |
+| Migrations/call | Build P50/P99 (ms/call) | Greedy P50/P99 (ms/call) | Total P50/P99 (ms/call) |
 | ---: | ---: | ---: | ---: |
 | 12 | 1.050 / 1.188 | 0.008 / 0.019 | 1.058 / 1.197 |
 | 24 | 1.063 / 1.179 | 0.010 / 0.015 | 1.073 / 1.191 |
@@ -362,15 +367,16 @@ R = \frac{C_{\mathrm{actual}}}{S} \times 100\%, \qquad S > 0.
 $$
 
 The four ranks execute the same scheduler concurrently, so this uses one
-representative rank and does not sum or divide by four. Layers within that rank's
-async worker are processed sequentially.
+representative rank and does not sum or divide by four. Each migrated layer
+causes one scheduler call; calls within that rank's async worker are processed
+sequentially.
 
 | Workload | Layer migrations | Expert migrations | Actual build (ms) | Actual greedy (ms) | Actual total (ms) | Serving time saved (ms) | Ratio |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Random | 581 | 58,087 | 2,665.86 | 54.54 | 2,720.40 | 16,516.61 | 16.47% |
 | Phased English | 715 | 71,930 | 3,302.26 | 67.79 | 3,370.06 | 18,023.51 | 18.70% |
 
-| Workload | Build P50/P99 (ms/layer) | Greedy P50/P99 (ms/layer) | Total P50/P99 (ms/layer) |
+| Workload | Build P50/P99 (ms/call) | Greedy P50/P99 (ms/call) | Total P50/P99 (ms/call) |
 | --- | ---: | ---: | ---: |
 | Random | 4.550 / 6.396 | 0.092 / 0.187 | 4.642 / 6.558 |
 | Phased English | 4.532 / 6.934 | 0.092 / 0.184 | 4.625 / 7.026 |

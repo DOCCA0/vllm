@@ -128,8 +128,8 @@ def plot(
         label="Build + greedy grouping P50",
     )
     scheduler.set_xlabel("Expert migrations per layer")
-    scheduler.set_ylabel("Python scheduling time (ms)")
-    scheduler.set_title("Scheduler scaling (9 MiB experts)")
+    scheduler.set_ylabel("Python scheduling time (ms per call)")
+    scheduler.set_title("Per-call scheduler scaling (9 MiB experts)")
     scheduler.grid(True, alpha=0.25)
     scheduler.legend(fontsize=8)
 
