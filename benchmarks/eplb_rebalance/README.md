@@ -240,20 +240,21 @@ its batching overhead reduced throughput in both workloads.
 as the constant value six. These runs happened to produce six batches per
 layer when batching was enabled.
 
-## 6. Migration Profiling
+## 6. Scheduler Profiling
 
-This profile measures the added Python scheduling work without repeating the
-serving benchmark. It uses 32 physical slots per rank, 102 remote transfers,
-12 directed rank-pair flows, and six scheduled batches. Each payload point has
-500 scheduler repetitions; the raw files also retain ten alternating off/on
-NIXL migrations after two warmups.
+This profile measures how Python scheduling cost scales with the number of
+expert migrations. It fixes the topology at four ranks, 32 physical slots per
+rank, 12 directed rank-pair flows, six batches, and 9 MiB per expert. Each point
+has 500 scheduler repetitions; the raw files also retain ten alternating
+off/on NIXL migrations after two warmups.
 
 Run the following command on all four nodes, changing `NODE_RANK` from 0 to 3.
-Repeat it for each payload size.
+Repeat it with `MIGRATIONS_PER_FLOW=1,2,4,6,8,10`.
 
 ```bash
 NODE_RANK=0
 EXPERT_BYTES=9437184
+MIGRATIONS_PER_FLOW=1
 
 cd ~/vllm-ilp
 export LD_LIBRARY_PATH=$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13/lib
@@ -264,7 +265,9 @@ export UCX_TLS=all UCX_NET_DEVICES=eno2 UCX_RCACHE_MAX_UNRELEASED=1024
 .venv/bin/python -m torch.distributed.run --nnodes=4 --nproc-per-node=1 \
   --node-rank=$NODE_RANK --master-addr=10.31.0.89 --master-port=29606 \
   benchmarks/eplb_rebalance/profile_nixl_migration.py \
-  --expert-bytes=$EXPERT_BYTES --warmup=2 --repeats=10 \
+  --expert-bytes=$EXPERT_BYTES \
+  --migrations-per-flow=$MIGRATIONS_PER_FLOW \
+  --warmup=2 --repeats=10 \
   --scheduler-repeats=500 --output=$HOME/profile.json
 ```
 
@@ -272,32 +275,42 @@ Qwen3-30B-A3B has `hidden_size=2048` and
 `moe_intermediate_size=768`. Its two FP16 expert matrices total exactly 9 MiB
 per expert, so the 9 MiB point matches the model used by the serving benchmark.
 
-| Expert payload | Scheduler P50/P99 (ms) |
-| ---: | ---: |
-| 4 KiB | 1.205 / 1.427 |
-| 64 KiB | 1.209 / 1.434 |
-| 1 MiB | 1.220 / 1.326 |
-| 9 MiB | 1.202 / 1.329 |
-| 64 MiB | 1.191 / 1.420 |
+| Migrations/layer | Build P50/P99 (ms) | Greedy P50/P99 (ms) | Total P50/P99 (ms) |
+| ---: | ---: | ---: | ---: |
+| 12 | 1.050 / 1.188 | 0.008 / 0.019 | 1.058 / 1.197 |
+| 24 | 1.063 / 1.179 | 0.010 / 0.015 | 1.073 / 1.191 |
+| 48 | 1.106 / 1.599 | 0.013 / 0.020 | 1.119 / 1.618 |
+| 72 | 1.151 / 1.339 | 0.016 / 0.026 | 1.167 / 1.357 |
+| 96 | 1.211 / 1.472 | 0.018 / 0.034 | 1.229 / 1.493 |
+| 120 | 1.231 / 1.376 | 0.021 / 0.033 | 1.253 / 1.402 |
 
-At 9 MiB, the greedy grouping itself is only 0.019 ms P50; most of the 1.202 ms
-is instruction construction. For Qwen3-30B's 48 layers, multiplying the
-per-layer medians gives about 57.7 ms of background CPU scheduling per complete
-model pass. This work runs in the async migration worker rather than on the
-inference critical path.
+Instruction construction includes a scan of the fixed 128-expert placement,
+while greedy grouping grows with the migration count. The total P50 increased
+by only 0.195 ms from 12 to 120 migrations.
 
-The figure places this component cost beside the existing async serving results.
-Those runs improved throughput by 0.23%/1.91%, TPOT P50 by 0.36%/4.96%, TPOT
-P99 by 2.15%/2.16%, and E2EL P50 by 2.30%/2.42% for random/phased workloads.
-The quantities are not directly additive: scheduling is paid per rebalance,
-while serving latency is measured per request.
+For a like-for-like cost comparison, the analysis reads the migration count of
+every layer from the existing async batching-on server logs, interpolates the
+measured scheduler cost, and sums it over the full benchmark.
 
-![NIXL migration profile](results/nixl_profile_20260904/migration_profile.png)
+| Workload | Layer events | Scheduler P50/P99 estimate (ms) | Serving time saved (ms) | P50/P99 overhead ratio |
+| --- | ---: | ---: | ---: | ---: |
+| Random | 215 | 265 / 316 | 2,063 | 12.85% / 15.31% |
+| Phased English | 213 | 263 / 312 | 15,674 | 1.67% / 1.99% |
 
-The nine unmodified JSON files, all 36 rank logs, and the generated CSV are in
-`results/nixl_profile_20260904/`. Regenerate the table and figure with:
+Thus the estimated scheduling cost remained below the measured async serving
+time saved in both workloads. The phased workload is more representative of
+production traffic; the random-number workload changes expert load less and
+therefore exercises the batching feature less. These ratios use one existing
+off/on serving run per workload, so they are cost estimates rather than
+confidence-bounded performance claims.
+
+![Scheduler cost and benefit](results/nixl_scheduler_scaling_20260904/scheduler_cost_benefit.png)
+
+The six unmodified JSON files, all 24 rank logs, and both generated CSV files
+are in `results/nixl_scheduler_scaling_20260904/`. Regenerate the tables and
+figure with:
 
 ```bash
-.venv/bin/python benchmarks/eplb_rebalance/analyze_nixl_profile.py \
-  benchmarks/eplb_rebalance/results/nixl_profile_20260904
+.venv/bin/python benchmarks/eplb_rebalance/analyze_scheduler_scaling.py \
+  benchmarks/eplb_rebalance/results/nixl_scheduler_scaling_20260904
 ```
