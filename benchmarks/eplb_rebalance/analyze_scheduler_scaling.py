@@ -111,9 +111,9 @@ def plot(
     )
     scheduler.plot(
         migrations,
-        [row["total_p99_ms"] for row in rows],
+        [row["total_p50_ms"] for row in rows],
         "o--",
-        label="Total scheduler P99",
+        label="Build + greedy grouping P50",
     )
     scheduler.set_xlabel("Expert migrations per layer")
     scheduler.set_ylabel("Python scheduling time (ms)")
@@ -123,21 +123,15 @@ def plot(
 
     benefit = axes[1]
     positions = np.arange(len(cost_benefit))
-    width = 0.25
-    benefit.bar(
-        positions - width,
+    width = 0.34
+    scheduler_bars = benefit.bar(
+        positions - width / 2,
         [row["scheduler_p50_ms"] for row in cost_benefit],
         width,
-        label="Scheduler estimate P50",
+        label="Estimated build + greedy grouping P50",
     )
-    benefit.bar(
-        positions,
-        [row["scheduler_p99_ms"] for row in cost_benefit],
-        width,
-        label="Scheduler estimate P99",
-    )
-    benefit.bar(
-        positions + width,
+    saving_bars = benefit.bar(
+        positions + width / 2,
         [row["serving_time_saved_ms"] for row in cost_benefit],
         width,
         label="Async serving time saved",
@@ -148,17 +142,9 @@ def plot(
     benefit.set_title("Scheduling cost versus serving benefit")
     benefit.grid(True, axis="y", alpha=0.25)
     benefit.legend(fontsize=8)
-    for index, row in enumerate(cost_benefit):
-        benefit.text(
-            index + width,
-            row["serving_time_saved_ms"],
-            f"  {row['overhead_ratio_p50_pct']:.1f}% P50 ratio",
-            rotation=90,
-            va="top",
-            ha="center",
-            fontsize=8,
-            color="white",
-        )
+    benefit.bar_label(scheduler_bars, fmt="%.0f ms", padding=3, fontsize=8)
+    benefit.bar_label(saving_bars, fmt="%.0f ms", padding=3, fontsize=8)
+    benefit.margins(y=0.10)
 
     figure.suptitle("EPLB batching scheduler overhead")
     figure.tight_layout()

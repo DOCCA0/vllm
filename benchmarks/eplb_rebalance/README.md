@@ -290,19 +290,27 @@ by only 0.195 ms from 12 to 120 migrations.
 
 For a like-for-like cost comparison, the analysis reads the migration count of
 every layer from the existing async batching-on server logs, interpolates the
-measured scheduler cost, and sums it over the full benchmark.
+measured P50 scheduler cost, and sums it over the full benchmark:
 
-| Workload | Layer events | Scheduler P50/P99 estimate (ms) | Serving time saved (ms) | P50/P99 overhead ratio |
-| --- | ---: | ---: | ---: | ---: |
-| Random | 215 | 265 / 316 | 2,063 | 12.85% / 15.31% |
-| Phased English | 213 | 263 / 312 | 15,674 | 1.67% / 1.99% |
+```text
+C = sum_i interpolate(P50(build + greedy), expert_migrations_i)
+S = (async_off_duration - async_on_duration) * 1000
+overhead_ratio = C / S * 100%
+```
+
+| Workload | Layer migrations | Expert migrations | Build + greedy P50 estimate (ms) | Serving time saved (ms) | Overhead ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Random | 215 | 21,669 | 265 | 2,063 | 12.85% |
+| Phased English | 213 | 21,480 | 263 | 15,674 | 1.67% |
 
 Thus the estimated scheduling cost remained below the measured async serving
 time saved in both workloads. The phased workload is more representative of
 production traffic; the random-number workload changes expert load less and
 therefore exercises the batching feature less. These ratios use one existing
 off/on serving run per workload, so they are cost estimates rather than
-confidence-bounded performance claims.
+confidence-bounded performance claims. They are also conservative because
+migration-stat logging builds instructions in the off runs, while the estimate
+charges the full instruction-build and greedy cost to batching.
 
 ![Scheduler cost and benefit](results/nixl_scheduler_scaling_20260904/scheduler_cost_benefit.png)
 
