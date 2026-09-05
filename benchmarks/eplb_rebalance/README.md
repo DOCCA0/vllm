@@ -258,14 +258,14 @@ All values come from PyTorch profiler events, not logging timers.
   --summary summary.csv
 ```
 
-| Migrations/call | Previous build P50/P99 (ms/call) | Optimized build P50/P99 (ms/call) | Greedy P50/P99 (ms/call) | Build speedup |
-| ---: | ---: | ---: | ---: | ---: |
-| 12 | 1.190 / 1.318 | 0.100 / 0.130 | 0.018 / 0.033 | 11.85x |
-| 24 | 1.193 / 1.321 | 0.114 / 0.137 | 0.020 / 0.035 | 10.44x |
-| 48 | 1.230 / 1.368 | 0.143 / 0.170 | 0.023 / 0.039 | 8.59x |
-| 72 | 1.288 / 1.412 | 0.173 / 0.212 | 0.027 / 0.043 | 7.46x |
-| 96 | 1.319 / 2.057 | 0.202 / 0.474 | 0.030 / 0.060 | 6.53x |
-| 120 | 1.360 / 2.761 | 0.230 / 0.489 | 0.034 / 0.068 | 5.92x |
+| Migrations/call | Previous build P50/P99 (ms/call) | Optimized build P50/P99 (ms/call) | Greedy P50/P99 (ms/call) |
+| ---: | ---: | ---: | ---: |
+| 12 | 1.190 / 1.318 | 0.100 / 0.130 | 0.018 / 0.033 |
+| 24 | 1.193 / 1.321 | 0.114 / 0.137 | 0.020 / 0.035 |
+| 48 | 1.230 / 1.368 | 0.143 / 0.170 | 0.023 / 0.039 |
+| 72 | 1.288 / 1.412 | 0.173 / 0.212 | 0.027 / 0.043 |
+| 96 | 1.319 / 2.057 | 0.202 / 0.474 | 0.030 / 0.060 |
+| 120 | 1.360 / 2.761 | 0.230 / 0.489 | 0.034 / 0.068 |
 
 The compressed Chrome trace and its CSV summary are in
 `results/scheduler_trace_optimized_20260904/`.
@@ -335,6 +335,23 @@ TPOT P99 by 2.79%/2.04%, and E2EL P50 by 1.58%/2.23% for random/phased.
 NIC P99 fell by 11.37%/10.77%. Random TTFT was unchanged; phased TTFT P50/P99
 regressed by 0.53%/2.93%.
 
+The trace-based cost/saved comparison uses the 120-migration trace point as a
+conservative per-call bound: the observed random/phased maxima were only
+117/116 migrations. For percentile `q`:
+
+$$
+C_q^{\mathrm{upper}} = N_{\mathrm{calls}}
+\left(t_{\mathrm{build},q}^{120} + t_{\mathrm{greedy},q}^{120}\right),
+\qquad
+R_q^{\mathrm{upper}} = \frac{C_q^{\mathrm{upper}}}
+{(D_{\mathrm{off}}-D_{\mathrm{on}})\times 1000}\times 100\%.
+$$
+
+| Workload | Scheduler calls | Max migrations/call | Scheduler cost P50/P99 upper bound (ms) | Serving time saved (ms) | Cost/saved P50/P99 upper bound |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Random | 581 | 117 | 153.32 / 323.87 | 45,400.93 | 0.34% / 0.71% |
+| Phased English | 715 | 116 | 188.68 / 398.56 | 39,361.24 | 0.48% / 1.01% |
+
 ![Optimized scheduler and serving results](results/eplb_decode_heavy_optimized_20260904/optimized_scheduler_and_serving.png)
 
 All unmodified bench JSON, warmup JSON, server logs, bench logs, configs, and NIC
@@ -345,5 +362,7 @@ summary and plot with:
 .venv/bin/python benchmarks/eplb_rebalance/analyze_optimized_profile.py \
   benchmarks/eplb_rebalance/results/scheduler_trace_optimized_20260904/summary.csv \
   benchmarks/eplb_rebalance/results/eplb_decode_heavy_optimized_20260904 \
-  benchmarks/eplb_rebalance/results/eplb_decode_heavy_optimized_20260904
+  benchmarks/eplb_rebalance/results/eplb_decode_heavy_optimized_20260904 \
+  --migration-log-dir \
+  benchmarks/eplb_rebalance/results/decode_heavy_profile_20260904
 ```

@@ -10,6 +10,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+import regex as re
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("trace_summary", type=Path)
     parser.add_argument("serving_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
+    parser.add_argument("--migration-log-dir", type=Path, required=True)
     return parser.parse_args()
 
 
@@ -74,15 +76,47 @@ def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer.writerows(rows)
 
 
-def improvement(off: dict[str, Any], on: dict[str, Any], metric: str) -> float:
-    if metric == "output_tok_s":
-        return (on[metric] - off[metric]) / off[metric] * 100
-    return (off[metric] - on[metric]) / off[metric] * 100
+def calculate_cost_bounds(
+    trace: dict[int, dict[str, float]],
+    serving: list[dict[str, Any]],
+    migration_log_dir: Path,
+) -> list[dict[str, Any]]:
+    trace_migrations = max(trace)
+    trace_row = trace[trace_migrations]
+    per_call_p50 = trace_row["after_build_p50_ms"] + trace_row["after_greedy_p50_ms"]
+    per_call_p99 = trace_row["after_build_p99_ms"] + trace_row["after_greedy_p99_ms"]
+    rows: list[dict[str, Any]] = []
+    for workload in ("random", "phased"):
+        log = (
+            migration_log_dir / workload / "01_async_batching_on" / "server.log"
+        ).read_text(errors="replace")
+        migrations = [
+            int(value)
+            for value in re.findall(r"EPLB migration stats:.*?transfers=(\d+)", log)
+        ]
+        pair = {row["batching"]: row for row in serving if row["workload"] == workload}
+        saved_ms = (pair["off"]["duration_s"] - pair["on"]["duration_s"]) * 1000
+        cost_p50 = len(migrations) * per_call_p50
+        cost_p99 = len(migrations) * per_call_p99
+        rows.append(
+            {
+                "workload": workload,
+                "scheduler_calls": len(migrations),
+                "maximum_migrations_per_call": max(migrations),
+                "trace_bound_migrations_per_call": trace_migrations,
+                "scheduler_cost_p50_bound_ms": cost_p50,
+                "scheduler_cost_p99_bound_ms": cost_p99,
+                "serving_time_saved_ms": saved_ms,
+                "cost_saved_p50_bound_pct": cost_p50 / saved_ms * 100,
+                "cost_saved_p99_bound_pct": cost_p99 / saved_ms * 100,
+            }
+        )
+    return rows
 
 
 def plot(
     trace: dict[int, dict[str, float]],
-    serving: list[dict[str, Any]],
+    cost_bounds: list[dict[str, Any]],
     path: Path,
 ) -> None:
     figure, axes = plt.subplots(1, 2, figsize=(13.2, 4.5))
@@ -106,55 +140,48 @@ def plot(
     scheduler.grid(True, alpha=0.25)
     scheduler.legend(fontsize=8)
 
-    by_workload = {
-        workload: {
-            row["batching"]: row for row in serving if row["workload"] == workload
-        }
-        for workload in ("random", "phased")
-    }
-    metrics = (
-        ("output_tok_s", "Throughput"),
-        ("ttft_p50_ms", "TTFT P50"),
-        ("ttft_p99_ms", "TTFT P99"),
-        ("tpot_p50_ms", "TPOT P50"),
-        ("tpot_p99_ms", "TPOT P99"),
-        ("e2el_p50_ms", "E2EL P50"),
-        ("e2el_p99_ms", "E2EL P99"),
-        ("nic_p99_mb_s", "NIC P99"),
-    )
-    positions = np.arange(len(metrics))
-    width = 0.38
+    positions = np.arange(len(cost_bounds))
+    width = 0.34
     serving_axis = axes[1]
-    for offset, workload in ((-width / 2, "random"), (width / 2, "phased")):
-        pair = by_workload[workload]
-        values = [improvement(pair["off"], pair["on"], metric) for metric, _ in metrics]
-        bars = serving_axis.bar(
-            positions + offset,
-            values,
-            width,
-            label=workload.title(),
-        )
-        for bar, value in zip(bars, values):
-            serving_axis.annotate(
-                f"{value:+.1f}%",
-                (bar.get_x() + bar.get_width() / 2, value),
-                xytext=(0, 3 if value >= 0 else -3),
-                textcoords="offset points",
-                ha="center",
-                va="bottom" if value >= 0 else "top",
-                fontsize=7,
-                rotation=90,
-            )
-    serving_axis.axhline(0, color="black", linewidth=0.8)
+    cost_bars = serving_axis.bar(
+        positions - width / 2,
+        [row["scheduler_cost_p50_bound_ms"] for row in cost_bounds],
+        width,
+        label="Scheduler cost P50 upper bound",
+    )
+    saving_bars = serving_axis.bar(
+        positions + width / 2,
+        [row["serving_time_saved_ms"] for row in cost_bounds],
+        width,
+        label="Async serving time saved",
+    )
+    serving_axis.set_yscale("log")
     serving_axis.set_xticks(positions)
     serving_axis.set_xticklabels(
-        [label for _, label in metrics], rotation=35, ha="right"
+        [
+            f"{row['workload'].title()}\n"
+            f"cost/saved: P50 ≤ {row['cost_saved_p50_bound_pct']:.2f}%, "
+            f"P99 ≤ {row['cost_saved_p99_bound_pct']:.2f}%"
+            for row in cost_bounds
+        ]
     )
-    serving_axis.set_ylabel("Improvement with batching (%)")
-    serving_axis.set_title("Decode-heavy async serving")
+    serving_axis.set_ylabel("Time over full benchmark (ms, log scale)")
+    serving_axis.set_title("Scheduler cost versus serving time saved")
     serving_axis.grid(True, axis="y", alpha=0.25)
     serving_axis.legend(fontsize=8)
-    serving_axis.margins(y=0.28)
+    for bars in (cost_bars, saving_bars):
+        for bar in bars:
+            height = bar.get_height()
+            serving_axis.annotate(
+                f"{height:,.0f} ms",
+                (bar.get_x() + bar.get_width() / 2, height),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
+    serving_axis.margins(y=0.35)
 
     figure.tight_layout()
     figure.savefig(path, dpi=180, bbox_inches="tight")
@@ -165,8 +192,14 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     trace = load_trace(args.trace_summary)
     serving = load_serving(args.serving_dir)
+    cost_bounds = calculate_cost_bounds(trace, serving, args.migration_log_dir)
     write_csv(serving, args.output_dir / "serving_summary.csv")
-    plot(trace, serving, args.output_dir / "optimized_scheduler_and_serving.png")
+    write_csv(cost_bounds, args.output_dir / "cost_benefit.csv")
+    plot(
+        trace,
+        cost_bounds,
+        args.output_dir / "optimized_scheduler_and_serving.png",
+    )
 
 
 if __name__ == "__main__":
