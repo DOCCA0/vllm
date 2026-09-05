@@ -124,8 +124,7 @@ def plot(
     migrations = np.asarray(sorted(trace))
     scheduler = axes[0]
     for key, label, style in (
-        ("before_build_p50_ms", "Previous build P50", "o-"),
-        ("after_build_p50_ms", "Optimized build P50", "o-"),
+        ("after_build_p50_ms", "Instruction build P50", "o-"),
         ("after_greedy_p50_ms", "Greedy grouping P50", "o--"),
     ):
         scheduler.plot(
@@ -155,7 +154,6 @@ def plot(
         width,
         label="Async serving time saved",
     )
-    serving_axis.set_yscale("log")
     serving_axis.set_xticks(positions)
     serving_axis.set_xticklabels(
         [
@@ -165,7 +163,7 @@ def plot(
             for row in cost_bounds
         ]
     )
-    serving_axis.set_ylabel("Time over full benchmark (ms, log scale)")
+    serving_axis.set_ylabel("Time over full benchmark (ms)")
     serving_axis.set_title("Scheduler cost versus serving time saved")
     serving_axis.grid(True, axis="y", alpha=0.25)
     serving_axis.legend(fontsize=8)

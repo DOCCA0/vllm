@@ -242,9 +242,8 @@ layer when batching was enabled.
 
 ## 6. Trace-based Scheduler Profiling
 
-The old instruction builder scanned the whole placement once per expert. The
-optimized builder creates expert-to-rank maps in two linear passes. Both paths
-produce identical instructions in 25,000 randomized placement checks.
+The instruction builder creates expert-to-rank maps in two linear passes before
+the greedy rank-pair grouping step.
 
 The profile replays six real four-rank placements, with 12 to 120 expert
 migrations per scheduler call. After 50 warmups, each point has 500 repetitions.
@@ -258,23 +257,22 @@ All values come from PyTorch profiler events, not logging timers.
   --summary summary.csv
 ```
 
-| Migrations/call | Previous build P50/P99 (ms/call) | Optimized build P50/P99 (ms/call) | Greedy P50/P99 (ms/call) |
-| ---: | ---: | ---: | ---: |
-| 12 | 1.190 / 1.318 | 0.100 / 0.130 | 0.018 / 0.033 |
-| 24 | 1.193 / 1.321 | 0.114 / 0.137 | 0.020 / 0.035 |
-| 48 | 1.230 / 1.368 | 0.143 / 0.170 | 0.023 / 0.039 |
-| 72 | 1.288 / 1.412 | 0.173 / 0.212 | 0.027 / 0.043 |
-| 96 | 1.319 / 2.057 | 0.202 / 0.474 | 0.030 / 0.060 |
-| 120 | 1.360 / 2.761 | 0.230 / 0.489 | 0.034 / 0.068 |
+| Migrations/call | Instruction build P50/P99 (ms/call) | Greedy P50/P99 (ms/call) |
+| ---: | ---: | ---: |
+| 12 | 0.100 / 0.130 | 0.018 / 0.033 |
+| 24 | 0.114 / 0.137 | 0.020 / 0.035 |
+| 48 | 0.143 / 0.170 | 0.023 / 0.039 |
+| 72 | 0.173 / 0.212 | 0.027 / 0.043 |
+| 96 | 0.202 / 0.474 | 0.030 / 0.060 |
+| 120 | 0.230 / 0.489 | 0.034 / 0.068 |
 
 The compressed Chrome trace and its CSV summary are in
 `results/scheduler_trace_optimized_20260904/`.
 
-## 7. Decode-heavy Async Serving after Optimization
+## 7. Decode-heavy Async Serving
 
-The serving A/B uses NIXL, prefix caching, and the same model and EPLB settings
-as the earlier benchmark. Profiling and migration-stat logging are disabled for
-both sides of the A/B.
+The serving A/B uses NIXL and prefix caching. Profiling and migration-stat
+logging are disabled for both sides of the A/B.
 
 ```bash
 cd ~/vllm-ilp
@@ -323,12 +321,19 @@ vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
   --result-dir "$RESULTS" --result-filename bench.json
 ```
 
-| Workload | Batching | Duration (s) | Output (tok/s) | TTFT P50/P99 (ms) | TPOT P50/P99 (ms) | E2EL P50/P99 (ms) | NIC P50/P99 (MB/s) |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Random | off | 1,497.12 | 40.08 | 28,648.48 / 44,882.28 | 644.36 / 745.12 | 225,242.20 / 242,171.79 | 318.63 / 614.19 |
-| Random | on | 1,451.72 | 41.33 | 28,654.62 / 44,905.56 | 623.78 / 724.31 | 221,688.07 / 241,318.74 | 302.00 / 544.35 |
-| Phased English | off | 1,900.04 | 40.42 | 40,638.24 / 61,215.13 | 672.59 / 784.28 | 238,039.94 / 244,282.08 | 304.44 / 631.64 |
-| Phased English | on | 1,860.68 | 41.28 | 40,854.71 / 63,011.10 | 648.95 / 768.27 | 232,741.74 / 238,833.92 | 304.59 / 563.64 |
+### Random results
+
+| Batching | Duration (s) | Output (tok/s) | TTFT P50/P99 (ms) | TPOT P50/P99 (ms) | E2EL P50/P99 (ms) | NIC P50/P99 (MB/s) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| off | 1,497.12 | 40.08 | 28,648.48 / 44,882.28 | 644.36 / 745.12 | 225,242.20 / 242,171.79 | 318.63 / 614.19 |
+| on | 1,451.72 | 41.33 | 28,654.62 / 44,905.56 | 623.78 / 724.31 | 221,688.07 / 241,318.74 | 302.00 / 544.35 |
+
+### Phased-English results
+
+| Batching | Duration (s) | Output (tok/s) | TTFT P50/P99 (ms) | TPOT P50/P99 (ms) | E2EL P50/P99 (ms) | NIC P50/P99 (MB/s) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| off | 1,900.04 | 40.42 | 40,638.24 / 61,215.13 | 672.59 / 784.28 | 238,039.94 / 244,282.08 | 304.44 / 631.64 |
+| on | 1,860.68 | 41.28 | 40,854.71 / 63,011.10 | 648.95 / 768.27 | 232,741.74 / 238,833.92 | 304.59 / 563.64 |
 
 Batching improved output throughput by 3.13%/2.12%, TPOT P50 by 3.19%/3.51%,
 TPOT P99 by 2.79%/2.04%, and E2EL P50 by 1.58%/2.23% for random/phased.
