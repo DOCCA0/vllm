@@ -8,8 +8,7 @@ import torch
 from vllm.config.parallel import EPLBConfig
 from vllm.distributed.eplb.eplb_communicator import EplbCommunicator
 from vllm.distributed.eplb.migration_scheduler import (
-    MigrationInstruction,
-    build_migration_instructions,
+    MigrationFlow,
     schedule_migration_batches,
 )
 from vllm.distributed.eplb.rebalance_execute import move_from_buffer, move_to_buffer
@@ -45,16 +44,19 @@ def test_migration_batching_is_enabled_by_default_and_can_be_disabled() -> None:
 
 
 def test_schedule_migration_batches_is_deterministic() -> None:
-    instructions = [
-        MigrationInstruction(1, 3, expert_id=0),
-        MigrationInstruction(2, 4, expert_id=1),
-        MigrationInstruction(0, 1, expert_id=2),
-        MigrationInstruction(0, 2, expert_id=3),
-        MigrationInstruction(0, 3, expert_id=4),
-        MigrationInstruction(0, 4, expert_id=5),
+    transfers = [
+        (1, 3, 0),
+        (2, 4, 1),
+        (0, 1, 2),
+        (0, 2, 3),
+        (0, 3, 4),
+        (0, 4, 5),
     ]
+    num_local_experts, old_indices, new_indices = _placements_for_transfers(
+        5, transfers
+    )
 
-    batches = schedule_migration_batches(instructions)
+    batches = schedule_migration_batches(num_local_experts, old_indices, new_indices)
 
     assert [_endpoints(batch) for batch in batches] == [
         [(1, 3), (2, 4)],
@@ -68,60 +70,73 @@ def test_schedule_migration_batches_is_deterministic() -> None:
 
 
 def test_schedule_migration_batches_coalesces_rank_pair() -> None:
-    instructions = [
-        MigrationInstruction(0, 1, expert_id=0),
-        MigrationInstruction(0, 1, expert_id=1),
-        MigrationInstruction(2, 3, expert_id=2),
+    transfers = [
+        (0, 1, 0),
+        (0, 1, 1),
+        (2, 3, 2),
     ]
+    num_local_experts, old_indices, new_indices = _placements_for_transfers(
+        4, transfers
+    )
 
-    assert schedule_migration_batches(instructions) == [instructions]
+    assert schedule_migration_batches(num_local_experts, old_indices, new_indices) == [
+        [
+            MigrationFlow(0, 1, expert_ids=(0, 1)),
+            MigrationFlow(2, 3, expert_ids=(2,)),
+        ]
+    ]
 
 
 def test_schedule_migration_batches_covers_random_instructions() -> None:
     rng = np.random.default_rng(42)
-    instructions = []
+    transfers = []
     for expert_id in range(80):
         src_rank, dst_rank = rng.integers(0, 8, size=2).tolist()
         if src_rank != dst_rank:
-            instructions.append(MigrationInstruction(src_rank, dst_rank, expert_id))
+            transfers.append((src_rank, dst_rank, expert_id))
+    num_local_experts, old_indices, new_indices = _placements_for_transfers(
+        8, transfers
+    )
 
-    batches = schedule_migration_batches(instructions)
+    batches = schedule_migration_batches(num_local_experts, old_indices, new_indices)
 
-    scheduled = [item for batch in batches for item in batch]
-    assert len(scheduled) == len(instructions)
-    assert set(scheduled) == set(instructions)
+    scheduled = _flatten_transfers(batches)
+    assert len(scheduled) == len(transfers)
+    assert set(scheduled) == set(transfers)
     for batch in batches:
         _assert_no_endpoint_conflict(batch)
 
 
-def test_build_migration_instructions_excludes_local_copies() -> None:
+def test_schedule_migration_batches_excludes_local_copies() -> None:
     # Old: rank 0 [0, 1], rank 1 [1, 2]. New: rank 1 needs expert 0.
     old_indices = np.array([0, 1, 1, 2], dtype=np.int64)
     new_indices = np.array([0, 1, 0, 2], dtype=np.int64)
 
-    assert build_migration_instructions(2, old_indices, new_indices) == [
-        MigrationInstruction(0, 1, expert_id=0)
+    assert schedule_migration_batches(2, old_indices, new_indices) == [
+        [MigrationFlow(0, 1, expert_ids=(0,))]
     ]
 
 
-def test_build_migration_instructions_requires_matching_shapes() -> None:
+def test_schedule_migration_batches_requires_matching_shapes() -> None:
     old_indices = np.array([0, 1], dtype=np.int64)
     new_indices = np.array([0], dtype=np.int64)
 
     with pytest.raises(AssertionError):
-        build_migration_instructions(1, old_indices, new_indices)
+        schedule_migration_batches(1, old_indices, new_indices)
 
 
-def test_build_migration_instructions_balances_replicas() -> None:
+def test_schedule_migration_batches_balances_replicas() -> None:
     # Rank 0 and rank 1 hold expert 0; ranks 2, 3, and 4 need it.
     old_indices = np.array([0, 0, 1, 1, 1], dtype=np.int64)
     new_indices = np.array([0, 0, 0, 0, 0], dtype=np.int64)
 
-    assert build_migration_instructions(1, old_indices, new_indices) == [
-        MigrationInstruction(0, 2, expert_id=0),
-        MigrationInstruction(0, 4, expert_id=0),
-        MigrationInstruction(1, 3, expert_id=0),
-    ]
+    batches = schedule_migration_batches(1, old_indices, new_indices)
+
+    assert set(_flatten_transfers(batches)) == {
+        (0, 2, 0),
+        (0, 4, 0),
+        (1, 3, 0),
+    }
 
 
 def test_move_to_buffer_uses_multiple_batches() -> None:
@@ -184,18 +199,49 @@ def test_move_to_buffer_uses_primary_duplicate_destination() -> None:
 
 
 def _endpoints(
-    instructions: list[MigrationInstruction],
+    flows: list[MigrationFlow],
 ) -> list[tuple[int, int]]:
-    return [(item.src_rank, item.dst_rank) for item in instructions]
+    return [(item.src_rank, item.dst_rank) for item in flows]
 
 
-def _assert_no_endpoint_conflict(batch: list[MigrationInstruction]) -> None:
+def _assert_no_endpoint_conflict(batch: list[MigrationFlow]) -> None:
     endpoints: set[int] = set()
-    rank_pairs: set[tuple[int, int]] = set()
-    for instruction in batch:
-        rank_pair = (instruction.src_rank, instruction.dst_rank)
-        if rank_pair not in rank_pairs:
-            assert instruction.src_rank not in endpoints
-            assert instruction.dst_rank not in endpoints
-            endpoints.update(rank_pair)
-            rank_pairs.add(rank_pair)
+    for flow in batch:
+        assert flow.src_rank not in endpoints
+        assert flow.dst_rank not in endpoints
+        endpoints.update((flow.src_rank, flow.dst_rank))
+
+
+def _flatten_transfers(
+    batches: list[list[MigrationFlow]],
+) -> list[tuple[int, int, int]]:
+    return [
+        (flow.src_rank, flow.dst_rank, expert_id)
+        for batch in batches
+        for flow in batch
+        for expert_id in flow.expert_ids
+    ]
+
+
+def _placements_for_transfers(
+    num_ranks: int,
+    transfers: list[tuple[int, int, int]],
+) -> tuple[int, np.ndarray, np.ndarray]:
+    old_counts = [0] * num_ranks
+    new_counts = [0] * num_ranks
+    for src_rank, dst_rank, _ in transfers:
+        old_counts[src_rank] += 1
+        new_counts[dst_rank] += 1
+    num_local_experts = max(1, *old_counts, *new_counts)
+    old_indices = np.full(num_ranks * num_local_experts, -1, dtype=np.int64)
+    new_indices = np.full_like(old_indices, -1)
+    old_counts = [0] * num_ranks
+    new_counts = [0] * num_ranks
+    for src_rank, dst_rank, expert_id in transfers:
+        old_offset = src_rank * num_local_experts + old_counts[src_rank]
+        new_offset = dst_rank * num_local_experts + new_counts[dst_rank]
+        old_indices[old_offset] = expert_id
+        new_indices[new_offset] = expert_id
+        old_counts[src_rank] += 1
+        new_counts[dst_rank] += 1
+    return num_local_experts, old_indices, new_indices

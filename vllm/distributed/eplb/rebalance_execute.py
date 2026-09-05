@@ -17,8 +17,7 @@ import vllm.envs as envs
 from vllm.distributed.eplb.eplb_communicator import EplbCommunicator
 from vllm.distributed.eplb.eplb_utils import CpuGpuEvent
 from vllm.distributed.eplb.migration_scheduler import (
-    MigrationInstruction,
-    build_migration_instructions,
+    MigrationFlow,
     schedule_migration_batches,
 )
 from vllm.logger import init_logger
@@ -28,27 +27,29 @@ logger = init_logger(__name__)
 
 
 def _log_migration_stats(
-    instructions: list[MigrationInstruction],
+    flows: list[MigrationFlow],
     num_batches: int,
     num_local_experts: int,
     old_indices: np.ndarray,
     ep_rank: int,
     layer_idx: int,
 ) -> None:
-    if ep_rank != 0 or not instructions:
+    if ep_rank != 0 or not flows:
         return
     world_size = old_indices.size // num_local_experts
     counts = np.zeros(world_size, dtype=np.int64)
-    for instruction in instructions:
-        counts[instruction.src_rank] += 1
-        counts[instruction.dst_rank] += 1
+    num_transfers = 0
+    for flow in flows:
+        flow_size = len(flow.expert_ids)
+        num_transfers += flow_size
+        counts[flow.src_rank] += flow_size
+        counts[flow.dst_rank] += flow_size
     mean = float(counts.mean())
-    flows = {(item.src_rank, item.dst_rank) for item in instructions}
     logger.info(
         "EPLB migration stats: layer=%d transfers=%d flows=%d batches=%d "
         "per-rank peak=%d mean=%.1f hotspot_ratio=%.2f",
         layer_idx,
-        len(instructions),
+        num_transfers,
         len(flows),
         num_batches,
         int(counts.max()),
@@ -207,10 +208,10 @@ def get_ep_ranks_with_experts_batch(
 
 
 def _execute_migration_batch(
-    batch: list[MigrationInstruction],
-    num_local_experts: int,
+    batch: list[MigrationFlow],
     old_indices: np.ndarray,
-    new_indices: np.ndarray,
+    old_rows: dict[int, int],
+    new_rows: dict[int, int],
     ep_rank: int,
     expert_weights: Sequence[torch.Tensor],
     expert_weights_buffers: Sequence[torch.Tensor],
@@ -218,38 +219,28 @@ def _execute_migration_batch(
     layer_idx: int,
 ) -> None:
     """Execute one batch of rank-pair-disjoint expert transfers."""
-    base = ep_rank * num_local_experts
-    old_local = old_indices[base : base + num_local_experts]
-    new_local = new_indices[base : base + num_local_experts]
-    old_rows: dict[int, int] = {}
-    new_rows: dict[int, int] = {}
-    for row, expert_id in enumerate(old_local):
-        if expert_id != -1:
-            old_rows.setdefault(int(expert_id), row)
-    for row, expert_id in enumerate(new_local):
-        if expert_id != -1:
-            new_rows.setdefault(int(expert_id), row)
-
     communicator.set_transfer_context(old_indices, layer_idx)
-    for instruction in batch:
-        if instruction.src_rank == ep_rank:
-            src_row = _get_migration_row(
-                old_rows, instruction, ep_rank, mapping_name="old"
-            )
-            communicator.add_send(
-                [weight[src_row] for weight in expert_weights],
-                instruction.dst_rank,
-                expert_id=instruction.expert_id,
-            )
-        elif instruction.dst_rank == ep_rank:
-            dst_row = _get_migration_row(
-                new_rows, instruction, ep_rank, mapping_name="new"
-            )
-            communicator.add_recv(
-                [buffer[dst_row] for buffer in expert_weights_buffers],
-                instruction.src_rank,
-                expert_id=instruction.expert_id,
-            )
+    for flow in batch:
+        if flow.src_rank == ep_rank:
+            for expert_id in flow.expert_ids:
+                src_row = _get_migration_row(
+                    old_rows, expert_id, flow, ep_rank, mapping_name="old"
+                )
+                communicator.add_send(
+                    [weight[src_row] for weight in expert_weights],
+                    flow.dst_rank,
+                    expert_id=expert_id,
+                )
+        elif flow.dst_rank == ep_rank:
+            for expert_id in flow.expert_ids:
+                dst_row = _get_migration_row(
+                    new_rows, expert_id, flow, ep_rank, mapping_name="new"
+                )
+                communicator.add_recv(
+                    [buffer[dst_row] for buffer in expert_weights_buffers],
+                    flow.src_rank,
+                    expert_id=expert_id,
+                )
     communicator.execute()
 
 
@@ -264,27 +255,37 @@ def _execute_migration_batches(
     layer_idx: int,
 ) -> None:
     """Execute all contention-aware migration batches for one layer."""
-    with torch.profiler.record_function("eplb: build migration instructions"):
-        instructions = build_migration_instructions(
+    with torch.profiler.record_function("eplb: schedule migration batches"):
+        batches = schedule_migration_batches(
             num_local_experts, old_indices, new_indices
         )
-    with torch.profiler.record_function("eplb: greedy migration grouping"):
-        batches = schedule_migration_batches(instructions)
     if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
+        flows = [flow for batch in batches for flow in batch]
         _log_migration_stats(
-            instructions,
+            flows,
             len(batches),
             num_local_experts,
             old_indices,
             ep_rank,
             layer_idx,
         )
+    base = ep_rank * num_local_experts
+    old_local = old_indices[base : base + num_local_experts]
+    new_local = new_indices[base : base + num_local_experts]
+    old_rows: dict[int, int] = {}
+    new_rows: dict[int, int] = {}
+    for row, expert_id in enumerate(old_local):
+        if expert_id != -1:
+            old_rows.setdefault(int(expert_id), row)
+    for row, expert_id in enumerate(new_local):
+        if expert_id != -1:
+            new_rows.setdefault(int(expert_id), row)
     for batch in batches:
         _execute_migration_batch(
             batch=batch,
-            num_local_experts=num_local_experts,
             old_indices=old_indices,
-            new_indices=new_indices,
+            old_rows=old_rows,
+            new_rows=new_rows,
             ep_rank=ep_rank,
             expert_weights=expert_weights,
             expert_weights_buffers=expert_weights_buffers,
@@ -295,18 +296,19 @@ def _execute_migration_batches(
 
 def _get_migration_row(
     rows: dict[int, int],
-    instruction: MigrationInstruction,
+    expert_id: int,
+    flow: MigrationFlow,
     ep_rank: int,
     mapping_name: str,
 ) -> int:
-    row = rows.get(instruction.expert_id)
+    row = rows.get(expert_id)
     if row is not None:
         return row
 
     message = (
-        f"Expert {instruction.expert_id} is missing from the {mapping_name} "
+        f"Expert {expert_id} is missing from the {mapping_name} "
         f"mapping on rank {ep_rank} for migration "
-        f"{instruction.src_rank} -> {instruction.dst_rank}"
+        f"{flow.src_rank} -> {flow.dst_rank}"
     )
     logger.error(message)
     raise RuntimeError(message)
@@ -436,11 +438,12 @@ def move_to_buffer(
         return transfer_metadata
 
     if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
-        instructions = build_migration_instructions(
+        batches = schedule_migration_batches(
             num_local_experts, old_indices, new_indices
         )
+        flows = [flow for batch in batches for flow in batch]
         _log_migration_stats(
-            instructions,
+            flows,
             1,
             num_local_experts,
             old_indices,

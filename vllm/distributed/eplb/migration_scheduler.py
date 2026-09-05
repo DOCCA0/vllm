@@ -7,93 +7,81 @@ from dataclasses import dataclass
 import numpy as np
 
 
-@dataclass(frozen=True)
-class MigrationInstruction:
-    """One remote expert transfer."""
+@dataclass(frozen=True, slots=True)
+class MigrationFlow:
+    """Expert transfers between one directed rank pair."""
 
     src_rank: int
     dst_rank: int
-    expert_id: int
+    expert_ids: tuple[int, ...]
 
 
-def _map_experts_to_ranks(
-    indices: np.ndarray, num_local_experts: int
-) -> dict[int, list[int]]:
-    ranks_by_expert: dict[int, list[int]] = {}
-    for rank, local_experts in enumerate(indices.reshape(-1, num_local_experts)):
-        for expert_id in set(local_experts.tolist()):
-            if expert_id != -1:
-                ranks_by_expert.setdefault(expert_id, []).append(rank)
-    return ranks_by_expert
-
-
-def build_migration_instructions(
+def schedule_migration_batches(
     num_local_experts: int,
     old_indices: np.ndarray,
     new_indices: np.ndarray,
-) -> list[MigrationInstruction]:
-    """Build the deterministic remote transfers for an expert remapping."""
+) -> list[list[MigrationFlow]]:
+    """Build and greedily group rank-pair-disjoint migration flows."""
     assert old_indices.shape == new_indices.shape
-    old_ranks_by_expert = _map_experts_to_ranks(old_indices, num_local_experts)
-    new_ranks_by_expert = _map_experts_to_ranks(new_indices, num_local_experts)
-    instructions: list[MigrationInstruction] = []
-    for expert_id in sorted(old_ranks_by_expert.keys() | new_ranks_by_expert.keys()):
+    recv_ranks_by_expert: dict[int, list[int]] = {}
+    old_experts_by_rank: list[set[int]] = []
+    old_by_rank = old_indices.reshape(-1, num_local_experts)
+    new_by_rank = new_indices.reshape(-1, num_local_experts)
+    for rank, (old_local, new_local) in enumerate(zip(old_by_rank, new_by_rank)):
+        old_experts = set(old_local.tolist())
+        old_experts.discard(-1)
+        old_experts_by_rank.append(old_experts)
+
+        new_experts = set(new_local.tolist())
+        new_experts.discard(-1)
+        for expert_id in new_experts - old_experts:
+            recv_ranks_by_expert.setdefault(expert_id, []).append(rank)
+
+    old_ranks_by_expert: dict[int, list[int]] = {}
+    needed_experts = recv_ranks_by_expert.keys()
+    for rank, old_experts in enumerate(old_experts_by_rank):
+        for expert_id in old_experts & needed_experts:
+            old_ranks_by_expert.setdefault(expert_id, []).append(rank)
+
+    expert_ids_by_pair: dict[tuple[int, int], list[int]] = {}
+    for expert_id in sorted(recv_ranks_by_expert):
         send_ranks = old_ranks_by_expert.get(expert_id, [])
-        recv_ranks = [
-            rank
-            for rank in new_ranks_by_expert.get(expert_id, [])
-            if rank not in send_ranks
-        ]
-        if not send_ranks or not recv_ranks:
+        if not send_ranks:
             continue
+        recv_ranks = recv_ranks_by_expert[expert_id]
 
         num_per_sender, remainder = divmod(len(recv_ranks), len(send_ranks))
         remainder_start = len(send_ranks) * num_per_sender
         for sender_idx, src_rank in enumerate(send_ranks):
             start = sender_idx * num_per_sender
-            assigned_ranks = recv_ranks[start : start + num_per_sender]
+            for dst_rank in recv_ranks[start : start + num_per_sender]:
+                expert_ids_by_pair.setdefault((src_rank, dst_rank), []).append(
+                    expert_id
+                )
             if sender_idx < remainder:
-                assigned_ranks.append(recv_ranks[remainder_start + sender_idx])
-            instructions.extend(
-                MigrationInstruction(src_rank, dst_rank, expert_id)
-                for dst_rank in assigned_ranks
-            )
+                dst_rank = recv_ranks[remainder_start + sender_idx]
+                expert_ids_by_pair.setdefault((src_rank, dst_rank), []).append(
+                    expert_id
+                )
 
-    return instructions
-
-
-def schedule_migration_batches(
-    instructions: list[MigrationInstruction],
-) -> list[list[MigrationInstruction]]:
-    """Greedily group transfers so each rank uses at most one peer per batch.
-
-    Transfers with the same directed rank pair are kept in one flow. Flows are
-    assigned to the first batch where neither endpoint is already in use.
-    """
-    flows_by_pair: dict[tuple[int, int], list[MigrationInstruction]] = {}
-    for instruction in instructions:
-        key = (instruction.src_rank, instruction.dst_rank)
-        flows_by_pair.setdefault(key, []).append(instruction)
-
-    batches: list[list[MigrationInstruction]] = []
-    endpoints_used: list[set[int]] = []
-    for flow in flows_by_pair.values():
-        src_rank = flow[0].src_rank
-        dst_rank = flow[0].dst_rank
-        for batch, used in zip(batches, endpoints_used):
-            if src_rank not in used and dst_rank not in used:
-                batch.extend(flow)
-                used.update((src_rank, dst_rank))
+    batches: list[list[MigrationFlow]] = []
+    endpoints_used: list[int] = []
+    for (src_rank, dst_rank), expert_ids in expert_ids_by_pair.items():
+        flow = MigrationFlow(src_rank, dst_rank, tuple(expert_ids))
+        endpoints = (1 << src_rank) | (1 << dst_rank)
+        for batch_idx, (batch, used) in enumerate(zip(batches, endpoints_used)):
+            if not endpoints & used:
+                batch.append(flow)
+                endpoints_used[batch_idx] |= endpoints
                 break
         else:
-            batches.append(list(flow))
-            endpoints_used.append({src_rank, dst_rank})
+            batches.append([flow])
+            endpoints_used.append(endpoints)
 
     return batches
 
 
 __all__ = [
-    "MigrationInstruction",
-    "build_migration_instructions",
+    "MigrationFlow",
     "schedule_migration_batches",
 ]

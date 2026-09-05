@@ -16,10 +16,7 @@ import torch
 
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.distributed.eplb.eplb_communicator import NixlEplbCommunicator
-from vllm.distributed.eplb.migration_scheduler import (
-    build_migration_instructions,
-    schedule_migration_batches,
-)
+from vllm.distributed.eplb.migration_scheduler import schedule_migration_batches
 from vllm.distributed.eplb.rebalance_execute import move_to_buffer
 from vllm.distributed.parallel_state import (
     destroy_distributed_environment,
@@ -96,12 +93,11 @@ def make_placement(
 
     for candidate_seed in range(seed, seed + 10_000):
         new_indices = np.random.default_rng(candidate_seed).permutation(old_indices)
-        instructions = build_migration_instructions(
+        batches = schedule_migration_batches(
             num_local_experts, old_indices, new_indices
         )
-        flows = {(item.src_rank, item.dst_rank) for item in instructions}
-        batches = schedule_migration_batches(instructions)
-        if len(flows) == world_size * (world_size - 1) and len(batches) == 6:
+        num_flows = sum(map(len, batches))
+        if num_flows == world_size * (world_size - 1) and len(batches) == 6:
             return old_indices, new_indices
     raise RuntimeError("Could not construct a 12-flow, 6-batch placement")
 
@@ -137,19 +133,13 @@ def profile_scheduler(
     new_indices: np.ndarray,
     repeats: int,
 ) -> dict[str, list[int]]:
-    build_ns: list[int] = []
-    schedule_ns: list[int] = []
+    scheduler_ns: list[int] = []
     for _ in range(repeats):
         start_ns = time.perf_counter_ns()
-        instructions = build_migration_instructions(
-            num_local_experts, old_indices, new_indices
-        )
-        middle_ns = time.perf_counter_ns()
-        schedule_migration_batches(instructions)
+        schedule_migration_batches(num_local_experts, old_indices, new_indices)
         end_ns = time.perf_counter_ns()
-        build_ns.append(middle_ns - start_ns)
-        schedule_ns.append(end_ns - middle_ns)
-    return {"build_ns": build_ns, "schedule_ns": schedule_ns}
+        scheduler_ns.append(end_ns - start_ns)
+    return {"scheduler_ns": scheduler_ns}
 
 
 def run_transfer(
@@ -222,10 +212,9 @@ def main() -> None:
             args.seed,
             args.migrations_per_flow,
         )
-        instructions = build_migration_instructions(
+        batches = schedule_migration_batches(
             args.num_local_experts, old_indices, new_indices
         )
-        batches = schedule_migration_batches(instructions)
         scheduler_profile = profile_scheduler(
             args.num_local_experts,
             old_indices,
@@ -311,10 +300,10 @@ def main() -> None:
                 "repeats": args.repeats,
                 "scheduler_repeats": args.scheduler_repeats,
                 "migrations_per_flow": args.migrations_per_flow,
-                "num_instructions": len(instructions),
-                "num_flows": len(
-                    {(item.src_rank, item.dst_rank) for item in instructions}
+                "num_instructions": sum(
+                    len(flow.expert_ids) for batch in batches for flow in batch
                 ),
+                "num_flows": sum(map(len, batches)),
                 "num_batches": len(batches),
                 "old_indices": old_indices.tolist(),
                 "new_indices": new_indices.tolist(),
