@@ -1,3 +1,0 @@
-workload,layer_migrations,expert_migrations,build_total_ms,greedy_total_ms,scheduler_total_ms,scheduler_per_layer_p50_ms,scheduler_per_layer_p99_ms,async_off_duration_s,async_on_duration_s,serving_time_saved_ms,cost_to_saving_ratio_pct
-random,212,21347,1062.568917,21.338068,1083.906985,4.891754,8.297830369999994,905.6078992260154,906.0588491600356,-450.9499340201728,
-phased,209,21222,997.794006,20.167838,1017.961844,4.641688,8.56266992,838.2087113750167,825.6761904800078,12532.520895008929,8.122562511788054

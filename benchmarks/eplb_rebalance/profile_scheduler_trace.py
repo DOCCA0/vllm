@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Create a PyTorch trace comparing EPLB scheduler implementations."""
+"""Create a PyTorch trace of EPLB migration flow scheduling."""
 
 import argparse
 import csv
@@ -148,18 +148,20 @@ def main() -> None:
             assert flatten_reference(reference) == flatten_flows(fused)
 
     activities = [torch.profiler.ProfilerActivity.CPU]
+    expected = {
+        migrations: flatten_reference(
+            schedule_reference(build_reference(num_local, old_indices, new_indices))
+        )
+        for migrations, num_local, old_indices, new_indices in placements
+    }
     with torch.profiler.profile(activities=activities) as profiler:
         for migrations, num_local, old_indices, new_indices in placements:
             for _ in range(args.repeats):
-                with torch.profiler.record_function(f"reference.total.{migrations}"):
-                    reference = schedule_reference(
-                        build_reference(num_local, old_indices, new_indices)
-                    )
                 with torch.profiler.record_function(f"fused.total.{migrations}"):
                     fused = schedule_migration_batches(
                         num_local, old_indices, new_indices
                     )
-                assert flatten_reference(reference) == flatten_flows(fused)
+                assert expected[migrations] == flatten_flows(fused)
 
     args.trace.parent.mkdir(parents=True, exist_ok=True)
     args.summary.parent.mkdir(parents=True, exist_ok=True)
@@ -167,7 +169,7 @@ def main() -> None:
 
     durations: dict[str, list[float]] = {}
     for event in profiler.events():
-        if event.name.startswith(("reference.", "fused.")):
+        if event.name.startswith("fused."):
             durations.setdefault(event.name, []).append(event.cpu_time_total / 1000)
 
     with args.summary.open("w", newline="") as output:

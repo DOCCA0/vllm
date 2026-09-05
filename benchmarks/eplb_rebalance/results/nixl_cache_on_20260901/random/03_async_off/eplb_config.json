@@ -1,1 +1,0 @@
-{"window_size":50,"step_interval":100,"num_redundant_experts":16,"log_balancedness":false,"use_async":true,"communicator":"nixl","enable_migration_batching":false}

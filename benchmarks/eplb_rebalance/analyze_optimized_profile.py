@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Summarize trace-based scheduler and decode-heavy serving profiles."""
+"""Summarize trace-based scheduler and serving profiles."""
 
 import argparse
 import csv
@@ -45,13 +45,19 @@ def nic_percentiles(path: Path) -> tuple[float, float]:
 def load_serving(root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for workload in ("random", "phased"):
-        for batching, tag in (("off", "00_async_off"), ("on", "01_async_on")):
+        for mode, batching, tag in (
+            ("sync", "off", "00_sync_off"),
+            ("sync", "on", "01_sync_on"),
+            ("async", "off", "00_async_off"),
+            ("async", "on", "01_async_on"),
+        ):
             case = root / workload / tag
             result = json.loads((case / "bench.json").read_text())
             nic_p50, nic_p99 = nic_percentiles(case / "nic.tsv")
             rows.append(
                 {
                     "workload": workload,
+                    "mode": mode,
                     "batching": batching,
                     "completed": result["completed"],
                     "duration_s": result["duration"],
@@ -76,39 +82,52 @@ def write_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer.writerows(rows)
 
 
-def calculate_cost_bounds(
+def formal_run_log(log: str, warmup_requests: int = 8) -> str:
+    completed = 0
+    lines = log.splitlines(keepends=True)
+    for offset, line in enumerate(lines):
+        if 'POST /v1/completions HTTP/1.1" 200 OK' in line:
+            completed += 1
+            if completed == warmup_requests:
+                return "".join(lines[offset + 1 :])
+    raise RuntimeError("Could not find the start of the formal benchmark")
+
+
+def calculate_cost_benefit(
     trace: dict[int, dict[str, float]],
     serving: list[dict[str, Any]],
     migration_log_dir: Path,
 ) -> list[dict[str, Any]]:
-    trace_migrations = max(trace)
-    trace_row = trace[trace_migrations]
-    per_call_p50 = trace_row["after_build_p50_ms"] + trace_row["after_greedy_p50_ms"]
-    per_call_p99 = trace_row["after_build_p99_ms"] + trace_row["after_greedy_p99_ms"]
+    trace_migrations = np.asarray(sorted(trace))
+    trace_p50_ms = np.asarray(
+        [trace[count]["fused_total_p50_ms"] for count in trace_migrations]
+    )
     rows: list[dict[str, Any]] = []
     for workload in ("random", "phased"):
-        log = (
-            migration_log_dir / workload / "01_async_batching_on" / "server.log"
-        ).read_text(errors="replace")
+        log = (migration_log_dir / workload / "01_async_on" / "server.log").read_text(
+            errors="replace"
+        )
         migrations = [
             int(value)
-            for value in re.findall(r"EPLB migration stats:.*?transfers=(\d+)", log)
+            for value in re.findall(
+                r"EPLB migration stats:.*?transfers=(\d+)", formal_run_log(log)
+            )
         ]
-        pair = {row["batching"]: row for row in serving if row["workload"] == workload}
+        pair = {
+            row["batching"]: row
+            for row in serving
+            if row["workload"] == workload and row["mode"] == "async"
+        }
         saved_ms = (pair["off"]["duration_s"] - pair["on"]["duration_s"]) * 1000
-        cost_p50 = len(migrations) * per_call_p50
-        cost_p99 = len(migrations) * per_call_p99
+        cost_p50 = float(np.interp(migrations, trace_migrations, trace_p50_ms).sum())
         rows.append(
             {
                 "workload": workload,
                 "scheduler_calls": len(migrations),
                 "maximum_migrations_per_call": max(migrations),
-                "trace_bound_migrations_per_call": trace_migrations,
-                "scheduler_cost_p50_bound_ms": cost_p50,
-                "scheduler_cost_p99_bound_ms": cost_p99,
+                "scheduler_cost_p50_ms": cost_p50,
                 "serving_time_saved_ms": saved_ms,
-                "cost_saved_p50_bound_pct": cost_p50 / saved_ms * 100,
-                "cost_saved_p99_bound_pct": cost_p99 / saved_ms * 100,
+                "cost_saved_p50_pct": cost_p50 / saved_ms * 100,
             }
         )
     return rows
@@ -123,16 +142,12 @@ def plot(
 
     migrations = np.asarray(sorted(trace))
     scheduler = axes[0]
-    for key, label, style in (
-        ("after_build_p50_ms", "Instruction build P50", "o-"),
-        ("after_greedy_p50_ms", "Greedy grouping P50", "o--"),
-    ):
-        scheduler.plot(
-            migrations,
-            [trace[count][key] for count in migrations],
-            style,
-            label=label,
-        )
+    scheduler.plot(
+        migrations,
+        [trace[count]["fused_total_p50_ms"] for count in migrations],
+        "o-",
+        label="Flow scheduling P50",
+    )
     scheduler.set_xlabel("Expert migrations per scheduler call")
     scheduler.set_ylabel("PyTorch trace time (ms per call)")
     scheduler.set_title("Scheduler CPU cost")
@@ -144,9 +159,9 @@ def plot(
     serving_axis = axes[1]
     cost_bars = serving_axis.bar(
         positions - width / 2,
-        [row["scheduler_cost_p50_bound_ms"] for row in cost_bounds],
+        [row["scheduler_cost_p50_ms"] for row in cost_bounds],
         width,
-        label="Scheduler cost P50 upper bound",
+        label="Trace-derived scheduler cost P50",
     )
     saving_bars = serving_axis.bar(
         positions + width / 2,
@@ -157,9 +172,7 @@ def plot(
     serving_axis.set_xticks(positions)
     serving_axis.set_xticklabels(
         [
-            f"{row['workload'].title()}\n"
-            f"cost/saved: P50 ≤ {row['cost_saved_p50_bound_pct']:.2f}%, "
-            f"P99 ≤ {row['cost_saved_p99_bound_pct']:.2f}%"
+            f"{row['workload'].title()}\ncost/saved: {row['cost_saved_p50_pct']:.2f}%"
             for row in cost_bounds
         ]
     )
@@ -190,13 +203,13 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     trace = load_trace(args.trace_summary)
     serving = load_serving(args.serving_dir)
-    cost_bounds = calculate_cost_bounds(trace, serving, args.migration_log_dir)
+    cost_bounds = calculate_cost_benefit(trace, serving, args.migration_log_dir)
     write_csv(serving, args.output_dir / "serving_summary.csv")
     write_csv(cost_bounds, args.output_dir / "cost_benefit.csv")
     plot(
         trace,
         cost_bounds,
-        args.output_dir / "optimized_scheduler_and_serving.png",
+        args.output_dir / "scheduler_and_serving.png",
     )
 
 
