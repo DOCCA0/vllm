@@ -185,14 +185,10 @@ background serving thread and includes runtime scheduling effects absent from
 the tight single-thread microbenchmark.
 
 The right-hand comparison therefore uses the measured async-serving P50, not
-the isolated algorithm profile. Every rank schedules the same layer placements
-concurrently, so `N` and the cumulative estimate are per rank rather than
-summed across four ranks:
-
-$$
-C_{P50}=N \times 0.572041\ \mathrm{ms}, \qquad
-R_{P50}=\frac{C_{P50}}{(D_{off}-D_{on})\times1000}\times100\%.
-$$
+the isolated algorithm profile. It estimates scheduler elapsed time as the
+observed calls per rank multiplied by 0.572 ms, then compares that with the
+measured async serving time saved. Every rank schedules the same layer
+placements concurrently, so the estimate is not summed across four ranks.
 
 | Workload | Scheduler calls/rank | Async-serving P50 (ms/call) | Estimated scheduler elapsed P50/rank (ms) | Serving time saved (ms) | Cost/saved |
 | --- | ---: | ---: | ---: | ---: | ---: |
