@@ -255,7 +255,11 @@ def _execute_migration_batches(
     layer_idx: int,
 ) -> None:
     """Execute all contention-aware migration batches for one layer."""
-    with torch.profiler.record_function("eplb: schedule migration batches"):
+    profile_name = "eplb: schedule migration batches"
+    with (
+        torch.profiler.record_function(profile_name),
+        torch.cuda.nvtx.range(profile_name),
+    ):
         batches = schedule_migration_batches(
             num_local_experts, old_indices, new_indices
         )
