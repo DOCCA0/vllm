@@ -156,8 +156,10 @@ batching less consistently even when the number of transfers is similar.
 
 ## Scheduler profiling
 
-PyTorch profiler replays six real four-rank placements with 12--120 expert
-migrations per call. Each point has 50 warmups and 500 measured calls.
+The isolated PyTorch profile replays six real four-rank placements with 12--120
+expert migrations per call. Each point has 50 warmups and 500 measured calls.
+It measures the hot CPU algorithm and its scaling with migration count; it is
+not an estimate of elapsed scheduler latency during serving.
 
 ```bash
 .venv/bin/python benchmarks/eplb_rebalance/profile_scheduler_trace.py \
@@ -175,26 +177,35 @@ migrations per call. Each point has 50 warmups and 500 measured calls.
 | 96 | 0.112 |
 | 120 | 0.133 |
 
-For each observed scheduler call `i`, the P50 trace time is linearly
-interpolated at its migration count `m_i`. The cumulative scheduler cost and
-cost/saved ratio are:
+An NVTX-only Nsight profile measures the same scheduler inside a complete async
+serving run. The median of the four ranks' elapsed P50 values is 0.572 ms/call
+(rank P50 range: 0.568--0.588 ms/call). This is reasonably higher than the
+isolated 0.047--0.133 ms CPU time: the serving measurement includes async-thread
+scheduling, descheduling, GIL waiting, and colder caches, while the isolated
+profile repeatedly executes the hot algorithm on one thread.
+
+The right-hand comparison therefore uses the measured async-serving P50, not
+the isolated algorithm profile. For `N` observed scheduler calls, cumulative
+cost and cost/saved ratio are:
 
 $$
-C_{P50}=\sum_i t_{P50}(m_i), \qquad
+C_{P50}=N \times 0.572041\ \mathrm{ms}, \qquad
 R_{P50}=\frac{C_{P50}}{(D_{off}-D_{on})\times1000}\times100\%.
 $$
 
-| Workload | Scheduler calls | Max migrations/call | Scheduler cost P50 (ms) | Serving time saved (ms) | Cost/saved |
+| Workload | Scheduler calls | Async-serving P50 (ms/call) | Scheduler cost P50 (ms) | Serving time saved (ms) | Cost/saved |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Random | 630 | 118 | 72.91 | 40,650.40 | 0.18% |
-| Phased English | 767 | 116 | 89.58 | 18,045.29 | 0.50% |
+| Random | 630 | 0.572 | 360.39 | 40,650.40 | 0.89% |
+| Phased English | 767 | 0.572 | 438.76 | 18,045.29 | 2.43% |
 
 ![Scheduler CPU cost and serving time saved](results/serving_nixl_20260905/scheduler_and_serving.png)
 
 The compressed Chrome trace and summary are under
 `results/scheduler_profile_20260905/`. The separate migration-stat runs used
 the same server and benchmark parameters and are under
-`results/migration_profile_20260905/`.
+`results/migration_profile_20260905/`. The complete NVTX-only serving traces,
+commands, benchmark output, and per-rank summary are under
+`results/serving_trace_20260909/nvtx_only_async_on/`.
 
 ```bash
 .venv/bin/python benchmarks/eplb_rebalance/analyze_optimized_profile.py \
@@ -202,5 +213,7 @@ the same server and benchmark parameters and are under
   benchmarks/eplb_rebalance/results/serving_nixl_20260905 \
   benchmarks/eplb_rebalance/results/serving_nixl_20260905 \
   --migration-log-dir \
-  benchmarks/eplb_rebalance/results/migration_profile_20260905
+  benchmarks/eplb_rebalance/results/migration_profile_20260905 \
+  --serving-trace-summary \
+  benchmarks/eplb_rebalance/results/serving_trace_20260909/nvtx_only_async_on/scheduler_summary.csv
 ```

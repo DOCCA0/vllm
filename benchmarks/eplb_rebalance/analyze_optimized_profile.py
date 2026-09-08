@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("serving_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--migration-log-dir", type=Path, required=True)
+    parser.add_argument("--serving-trace-summary", type=Path, required=True)
     return parser.parse_args()
 
 
@@ -94,14 +95,14 @@ def formal_run_log(log: str, warmup_requests: int = 8) -> str:
 
 
 def calculate_cost_benefit(
-    trace: dict[int, dict[str, float]],
     serving: list[dict[str, Any]],
     migration_log_dir: Path,
+    serving_trace_summary: Path,
 ) -> list[dict[str, Any]]:
-    trace_migrations = np.asarray(sorted(trace))
-    trace_p50_ms = np.asarray(
-        [trace[count]["fused_total_p50_ms"] for count in trace_migrations]
-    )
+    with serving_trace_summary.open(newline="") as source:
+        serving_p50_ms = float(
+            np.median([float(row["p50_ms"]) for row in csv.DictReader(source)])
+        )
     rows: list[dict[str, Any]] = []
     for workload in ("random", "phased"):
         log = (migration_log_dir / workload / "01_async_on" / "server.log").read_text(
@@ -119,12 +120,13 @@ def calculate_cost_benefit(
             if row["workload"] == workload and row["mode"] == "async"
         }
         saved_ms = (pair["off"]["duration_s"] - pair["on"]["duration_s"]) * 1000
-        cost_p50 = float(np.interp(migrations, trace_migrations, trace_p50_ms).sum())
+        cost_p50 = len(migrations) * serving_p50_ms
         rows.append(
             {
                 "workload": workload,
                 "scheduler_calls": len(migrations),
                 "maximum_migrations_per_call": max(migrations),
+                "serving_scheduler_p50_ms_per_call": serving_p50_ms,
                 "scheduler_cost_p50_ms": cost_p50,
                 "serving_time_saved_ms": saved_ms,
                 "cost_saved_p50_pct": cost_p50 / saved_ms * 100,
@@ -161,7 +163,7 @@ def plot(
         positions - width / 2,
         [row["scheduler_cost_p50_ms"] for row in cost_bounds],
         width,
-        label="Trace-derived scheduler cost P50",
+        label="Async-serving scheduler cost P50",
     )
     saving_bars = serving_axis.bar(
         positions + width / 2,
@@ -203,7 +205,11 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     trace = load_trace(args.trace_summary)
     serving = load_serving(args.serving_dir)
-    cost_bounds = calculate_cost_benefit(trace, serving, args.migration_log_dir)
+    cost_bounds = calculate_cost_benefit(
+        serving,
+        args.migration_log_dir,
+        args.serving_trace_summary,
+    )
     write_csv(serving, args.output_dir / "serving_summary.csv")
     write_csv(cost_bounds, args.output_dir / "cost_benefit.csv")
     plot(
