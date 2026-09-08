@@ -180,20 +180,21 @@ not an estimate of elapsed scheduler latency during serving.
 An NVTX-only Nsight profile measures the same scheduler inside a complete async
 serving run. The median of the four ranks' elapsed P50 values is 0.572 ms/call
 (rank P50 range: 0.568--0.588 ms/call). This is reasonably higher than the
-isolated 0.047--0.133 ms CPU time: the serving measurement includes async-thread
-scheduling, descheduling, GIL waiting, and colder caches, while the isolated
-profile repeatedly executes the hot algorithm on one thread.
+isolated 0.047--0.133 ms CPU time: it is wall-clock elapsed time in a real
+background serving thread and includes runtime scheduling effects absent from
+the tight single-thread microbenchmark.
 
 The right-hand comparison therefore uses the measured async-serving P50, not
-the isolated algorithm profile. For `N` observed scheduler calls, cumulative
-cost and cost/saved ratio are:
+the isolated algorithm profile. Every rank schedules the same layer placements
+concurrently, so `N` and the cumulative estimate are per rank rather than
+summed across four ranks:
 
 $$
 C_{P50}=N \times 0.572041\ \mathrm{ms}, \qquad
 R_{P50}=\frac{C_{P50}}{(D_{off}-D_{on})\times1000}\times100\%.
 $$
 
-| Workload | Scheduler calls | Async-serving P50 (ms/call) | Scheduler cost P50 (ms) | Serving time saved (ms) | Cost/saved |
+| Workload | Scheduler calls/rank | Async-serving P50 (ms/call) | Estimated scheduler elapsed P50/rank (ms) | Serving time saved (ms) | Cost/saved |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Random | 630 | 0.572 | 360.39 | 40,650.40 | 0.89% |
 | Phased English | 767 | 0.572 | 438.76 | 18,045.29 | 2.43% |

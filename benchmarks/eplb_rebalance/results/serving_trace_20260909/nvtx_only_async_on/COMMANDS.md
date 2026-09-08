@@ -81,7 +81,8 @@ ranges between the earliest start and latest end of the captured
 Systems.
 
 The median of the four per-rank P50 values is 0.572 ms/call. This is elapsed
-time in the async serving thread, including thread scheduling, descheduling,
-GIL waiting, and cache state. The separate isolated scheduler profile measures
-hot algorithm CPU time (0.047--0.133 ms/call for 12--120 migrations), so it is
-used only to characterize algorithmic scaling, not to estimate serving cost.
+time in a real async serving thread and includes runtime scheduling effects
+absent from a tight microbenchmark. The separate isolated scheduler profile
+measures hot algorithm CPU time (0.047--0.133 ms/call for 12--120 migrations),
+so it is used only to characterize algorithmic scaling, not to estimate
+serving cost.

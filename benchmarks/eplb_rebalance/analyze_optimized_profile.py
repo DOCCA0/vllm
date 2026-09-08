@@ -124,10 +124,10 @@ def calculate_cost_benefit(
         rows.append(
             {
                 "workload": workload,
-                "scheduler_calls": len(migrations),
+                "scheduler_calls_per_rank": len(migrations),
                 "maximum_migrations_per_call": max(migrations),
                 "serving_scheduler_p50_ms_per_call": serving_p50_ms,
-                "scheduler_cost_p50_ms": cost_p50,
+                "estimated_scheduler_elapsed_p50_ms_per_rank": cost_p50,
                 "serving_time_saved_ms": saved_ms,
                 "cost_saved_p50_pct": cost_p50 / saved_ms * 100,
             }
@@ -161,9 +161,9 @@ def plot(
     serving_axis = axes[1]
     cost_bars = serving_axis.bar(
         positions - width / 2,
-        [row["scheduler_cost_p50_ms"] for row in cost_bounds],
+        [row["estimated_scheduler_elapsed_p50_ms_per_rank"] for row in cost_bounds],
         width,
-        label="Async-serving scheduler cost P50",
+        label="Estimated scheduler elapsed (P50/rank)",
     )
     saving_bars = serving_axis.bar(
         positions + width / 2,
