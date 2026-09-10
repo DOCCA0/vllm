@@ -1,11 +1,13 @@
 # Four-node NIXL EPLB migration batching
 
 This benchmark uses Ubuntu 22.04.5, four Quadro RTX 6000 24 GB GPUs (one per
-node), Ray 2.56.1, NIXL 1.3.2, and 10 GbE without RDMA. The tested code is
-commit `bfd9399157`. Prefix caching is enabled in every run.
+node), Ray 2.56.1, NIXL 1.3.2, and 10 GbE without RDMA. The clean end-to-end
+runs used commit `a4f561e19a`. Prefix caching is enabled in every run.
 
-The complete commands and raw profiling method are in
-[COMMANDS.md](results/serving_nixl_20260910_cycle_precompute/COMMANDS.md).
+The complete end-to-end commands are in
+[COMMANDS.md](results/serving_nixl_20260911_clean_e2e/COMMANDS.md). Profiling
+commands are documented separately under
+`results/serving_nixl_20260910_cycle_precompute/`.
 
 ## Cluster setup
 
@@ -55,7 +57,7 @@ export LD_LIBRARY_PATH=$PWD/.venv/lib/python3.12/site-packages/nvidia/cu13/lib
 export NCCL_IB_DISABLE=1 NCCL_SOCKET_FAMILY=AF_INET
 export NCCL_SOCKET_IFNAME=eno2 GLOO_SOCKET_IFNAME=eno2
 export UCX_TLS=all UCX_NET_DEVICES=eno2 UCX_RCACHE_MAX_UNRELEASED=1024
-export VLLM_EPLB_LOG_MIGRATION_STATS=1
+export VLLM_EPLB_LOG_MIGRATION_STATS=0
 
 MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
 USE_ASYNC=true     # repeat with false
@@ -115,37 +117,37 @@ a `vllm bench serve` metric.
 
 ## End-to-end results
 
-All requests succeeded. Raw JSON, logs, NIC samples, traces, and summaries are
-under `results/serving_nixl_20260910_cycle_precompute/`.
+All requests succeeded. These are single-run paired comparisons without
+profiling or diagnostic migration logging. Raw JSON, logs, NIC samples, and the
+summary are under `results/serving_nixl_20260911_clean_e2e/`.
 
 ### Random workload
 
 | Mode | Batching | Duration (s) | Output (tok/s) | TTFT P50/P99 (ms) | TPOT P50/P99 (ms) | E2EL P50/P99 (ms) | NIC P50/P99 (MB/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| sync | off | 2,312.78 | 25.94 | 29,399.95 / 48,798.73 | 1,021.99 / 1,136.92 | 340,081.87 / 354,373.88 | 107.67 / 635.12 |
-| sync | on | 2,468.02 | 24.31 | 28,834.00 / 50,636.72 | 1,101.40 / 1,207.26 | 361,409.21 / 381,648.24 | 107.00 / 597.99 |
-| async | off | 1,456.99 | 41.18 | 28,927.16 / 45,012.18 | 628.42 / 725.30 | 221,195.60 / 236,370.29 | 333.97 / 610.51 |
-| async | on | 1,437.24 | 41.75 | 28,165.42 / 44,274.41 | 612.41 / 721.67 | 220,980.21 / 236,754.14 | 309.45 / 556.21 |
+| sync | off | 2,300.06 | 26.09 | 28,861.61 / 49,425.56 | 1,026.97 / 1,128.56 | 339,940.86 / 354,637.96 | 106.94 / 659.27 |
+| sync | on | 2,428.22 | 24.71 | 29,171.10 / 48,215.95 | 1,083.52 / 1,173.84 | 354,043.93 / 380,462.95 | 110.16 / 620.38 |
+| async | off | 1,471.03 | 40.79 | 28,173.62 / 44,766.00 | 631.10 / 738.11 | 220,690.40 / 232,788.46 | 333.70 / 604.52 |
+| async | on | 1,444.45 | 41.54 | 28,433.61 / 44,917.12 | 622.99 / 727.35 | 217,276.94 / 239,246.84 | 303.33 / 547.88 |
 
-In async mode, batching raised throughput by 1.37%, reduced TTFT P50/P99 by
-2.63%/1.64%, TPOT P50/P99 by 2.55%/0.50%, and NIC P50/P99 by 7.34%/8.90%.
-E2EL P50 fell by 0.10%, while E2EL P99 rose by 0.16%. In sync mode, throughput
-fell by 6.29% because conflict-free batches execute serially while inference is
+In async mode, batching raised throughput by 1.84%, reduced TPOT P50/P99 by
+1.29%/1.46%, E2EL P50 by 1.55%, and NIC P50/P99 by 9.10%/9.37%. TTFT P50/P99
+rose by 0.92%/0.34%, and E2EL P99 rose by 2.77%. In sync mode, throughput fell
+by 5.28% because conflict-free batches execute serially while inference is
 paused.
 
 ### Phased-English workload
 
 | Mode | Batching | Duration (s) | Output (tok/s) | TTFT P50/P99 (ms) | TPOT P50/P99 (ms) | E2EL P50/P99 (ms) | NIC P50/P99 (MB/s) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| sync | off | 2,924.44 | 26.26 | 40,706.56 / 97,247.70 | 1,099.41 / 1,210.71 | 364,499.70 / 370,849.25 | 106.57 / 625.56 |
-| sync | on | 3,041.21 | 25.25 | 40,502.61 / 99,280.08 | 1,146.72 / 1,256.01 | 378,877.16 / 386,795.63 | 109.14 / 608.98 |
-| async | off | 1,900.43 | 40.41 | 40,619.13 / 61,971.27 | 676.54 / 780.30 | 237,177.93 / 245,352.56 | 310.42 / 626.69 |
-| async | on | 1,883.00 | 40.79 | 40,666.30 / 62,801.18 | 660.08 / 772.75 | 233,319.74 / 247,475.39 | 291.51 / 557.20 |
+| sync | off | 2,921.35 | 26.29 | 40,449.89 / 99,029.81 | 1,099.07 / 1,209.36 | 365,319.39 / 371,649.73 | 109.95 / 621.56 |
+| sync | on | 3,052.95 | 25.16 | 40,857.21 / 102,399.60 | 1,156.06 / 1,264.49 | 380,874.65 / 389,730.30 | 112.64 / 605.46 |
+| async | off | 1,893.46 | 40.56 | 40,987.19 / 61,575.88 | 662.76 / 786.24 | 236,321.17 / 245,964.89 | 305.12 / 627.49 |
+| async | on | 1,862.50 | 41.23 | 41,278.66 / 61,895.45 | 652.00 / 767.62 | 231,852.28 / 242,195.02 | 294.56 / 571.11 |
 
-In async mode, batching raised throughput by 0.93%, reduced TPOT P50/P99 by
-2.43%/0.97%, E2EL P50 by 1.63%, and NIC P50/P99 by 6.09%/11.09%. TTFT
-P50/P99 rose by 0.12%/1.34%, and E2EL P99 rose by 0.87%. In sync mode,
-throughput fell by 3.84%.
+In async mode, batching raised throughput by 1.66%, reduced TPOT P50/P99 by
+1.62%/2.37%, E2EL P50/P99 by 1.89%/1.53%, and NIC P50/P99 by 3.46%/8.99%.
+TTFT P50/P99 rose by 0.71%/0.52%. In sync mode, throughput fell by 4.31%.
 
 Async EPLB is generally the relevant mode for production serving: migration
 runs in the background while inference continues, so reducing NIC contention
@@ -178,8 +180,9 @@ single-layer latency or an estimate derived from the new implementation.
 
 ### Full async serving traces and measured cost/saved ratio
 
-The Random and Phased async batching-on cases above were captured end to end
-with NVTX-only Nsight Systems on all four ranks. Search the reports for
+This is an independent profiling run, not the clean end-to-end run above. Its
+Random and Phased async batching-on cases were captured end to end with
+NVTX-only Nsight Systems on all four ranks. Search the reports for
 `eplb: schedule migration batches`; every range is one call that builds all 48
 layer schedules. Formal-run boundaries recorded alongside each benchmark allow
 warm-up calls to be excluded exactly.
@@ -194,6 +197,8 @@ cost is the largest measured cumulative time among the four ranks. Serving time
 saved is the measured batching-off duration minus the batching-on duration from
 the same workload. Thus `cost/saved = max-rank cumulative scheduler time /
 serving time saved`; neither the call count nor scheduler duration is estimated.
+The ratio uses the paired off/on durations from this same profiling run, rather
+than mixing them with the clean end-to-end results above.
 
 ![Scheduler placement and measured cost/saved ratio](https://raw.githubusercontent.com/DOCCA0/vllm/refs/heads/ilp/benchmarks/eplb_rebalance/results/serving_nixl_20260910_cycle_precompute/scheduler_profile.png)
 
