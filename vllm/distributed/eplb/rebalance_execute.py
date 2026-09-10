@@ -255,16 +255,18 @@ def _execute_migration_batches(
     expert_weights_buffers: Sequence[torch.Tensor],
     communicator: EplbCommunicator,
     layer_idx: int,
+    batches: list[list[MigrationFlow]] | None = None,
 ) -> None:
     """Execute all contention-aware migration batches for one layer."""
-    profile_name = "eplb: schedule migration batches"
-    with (
-        torch.profiler.record_function(profile_name),
-        torch.cuda.nvtx.range(profile_name),
-    ):
-        batches = schedule_migration_batches(
-            num_local_experts, old_indices, new_indices
-        )
+    if batches is None:
+        profile_name = "eplb: schedule migration batches"
+        with (
+            torch.profiler.record_function(profile_name),
+            torch.cuda.nvtx.range(profile_name),
+        ):
+            batches = schedule_migration_batches(
+                num_local_experts, old_indices, new_indices
+            )
     if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
         flows = [flow for batch in batches for flow in batch]
         _log_migration_stats(
@@ -331,6 +333,7 @@ def move_to_buffer(
     communicator: EplbCommunicator,
     layer_idx: int = 0,
     enable_migration_batching: bool = False,
+    migration_batches: list[list[MigrationFlow]] | None = None,
 ) -> TransferMetadata:
     """
     Rearranges expert weights during EPLB rebalancing.
@@ -349,6 +352,7 @@ def move_to_buffer(
         layer_idx: Index of the MoE layer being transferred.
         enable_migration_batching: Schedule remote transfers in batches where
             each rank communicates with at most one peer.
+        migration_batches: Optional batches precomputed for this layer.
 
     Returns:
         TransferMetadata: Metadata needed for completing remote weight transfers.
@@ -440,6 +444,7 @@ def move_to_buffer(
             expert_weights_buffers=expert_weights_buffers,
             communicator=communicator,
             layer_idx=layer_idx,
+            batches=migration_batches,
         )
         return transfer_metadata
 
@@ -619,6 +624,7 @@ def transfer_layer(
     rank_mapping: dict[int, int] | None = None,
     layer_idx: int = 0,
     enable_migration_batching: bool = False,
+    migration_batches: list[list[MigrationFlow]] | None = None,
 ) -> TransferMetadata:
     """
     Rearranges the expert weights in place according to the new expert indices.
@@ -643,6 +649,7 @@ def transfer_layer(
         layer_idx: Index of the MoE layer being transferred.
         enable_migration_batching: Schedule remote transfers in batches where
             each rank communicates with at most one peer.
+        migration_batches: Optional batches precomputed for this layer.
 
     Returns:
         TransferMetadata: Metadata needed for completing remote weight transfers,
@@ -692,6 +699,7 @@ def transfer_layer(
         communicator=communicator,
         layer_idx=layer_idx,
         enable_migration_batching=enable_migration_batching,
+        migration_batches=migration_batches,
     )
 
 

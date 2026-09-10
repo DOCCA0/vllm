@@ -13,6 +13,7 @@ from vllm.distributed.parallel_state import get_eplb_group
 from vllm.logger import init_logger
 
 from .eplb_utils import CpuGpuEvent
+from .migration_scheduler import schedule_migration_batches_for_layers
 from .rebalance_execute import AsyncEplbLayerResult, transfer_layer
 
 if TYPE_CHECKING:
@@ -101,6 +102,20 @@ def transfer_run_periodically(
                 model_state, state, physical_to_logical_map_cpu, cuda_stream
             )
 
+            migration_batches_by_layer = None
+            if state.parallel_config.eplb_config.enable_migration_batching:
+                profile_name = "eplb: schedule migration batches"
+                num_local_experts = model_state.model.expert_weights[0][0].shape[0]
+                with (
+                    torch.profiler.record_function(profile_name),
+                    torch.cuda.nvtx.range(profile_name),
+                ):
+                    migration_batches_by_layer = schedule_migration_batches_for_layers(
+                        num_local_experts,
+                        physical_to_logical_map_cpu.numpy(),
+                        new_physical_to_logical_map.numpy(),
+                    )
+
             # Execute one EPLB layer transfer per model forward pass. Each iteration
             # of this loop will copy the new set of expert weights into
             # model_state.expert_buffer, which will be consumed by the main thread in
@@ -138,6 +153,11 @@ def transfer_run_periodically(
                     layer_idx=layer_idx,
                     enable_migration_batching=(
                         state.parallel_config.eplb_config.enable_migration_batching
+                    ),
+                    migration_batches=(
+                        migration_batches_by_layer[layer_idx]
+                        if migration_batches_by_layer is not None
+                        else None
                     ),
                 )
 
