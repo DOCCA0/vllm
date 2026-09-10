@@ -106,6 +106,8 @@ def transfer_run_periodically(
             if state.parallel_config.eplb_config.enable_migration_batching:
                 profile_name = "eplb: schedule migration batches"
                 num_local_experts = model_state.model.expert_weights[0][0].shape[0]
+                # These CPU snapshots stay fixed throughout this migration cycle.
+                # Build together; transfers still proceed one layer at a time.
                 with (
                     torch.profiler.record_function(profile_name),
                     torch.cuda.nvtx.range(profile_name),

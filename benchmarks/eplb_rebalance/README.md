@@ -3,7 +3,12 @@
 This benchmark uses Ubuntu 22.04.5, four Quadro RTX 6000 24 GB GPUs (one per
 node), Ray 2.56.1, NIXL 1.3.2, and 10 GbE without RDMA. The tested source is
 commit `83f052324b` on `ilp`, based on upstream `76ff0cdff2`. Prefix caching is
-enabled in every run.
+enabled in every run. The full benchmark tables below predate cycle-wide
+precomputation. New serving profiles use candidate `bfd9399157`; their short
+8-request results are reported separately.
+
+The full new server, warmup, and profile commands are in
+[COMMANDS.md](results/serving_trace_20260910/COMMANDS.md).
 
 ## Cluster setup
 
@@ -177,40 +182,65 @@ not an estimate of elapsed scheduler latency during serving.
 | 96 | 0.112 |
 | 120 | 0.133 |
 
-An NVTX-only Nsight profile measures the same scheduler inside a complete async
-serving run. The median of the four ranks' elapsed P50 values is 0.572 ms/call
-(rank P50 range: 0.568--0.588 ms/call). This is reasonably higher than the
-isolated 0.047--0.133 ms CPU time: it is wall-clock elapsed time in a real
-background serving thread and includes runtime scheduling effects absent from
-the tight single-thread microbenchmark.
+Async scheduling is captured as `eplb: schedule migration batches`. Each range
+now covers **all 48 layers in one EPLB cycle**, including schedule construction.
+The trace includes serving NVTX events such as `execute_context_*`; it does not
+include CUDA kernel timing. Profiling builds add an NVTX range alongside the
+production `record_function` marker.
 
-The right-hand comparison therefore uses the measured async-serving P50, not
-the isolated algorithm profile. It estimates scheduler elapsed time as the
-observed calls per rank multiplied by 0.572 ms, then compares that with the
-measured async serving time saved. Every rank schedules the same layer
-placements concurrently, so the estimate is not summed across four ranks.
+Two fresh-server runs each completed 8/8 requests and profiler shutdown. All
+scheduler ranges in each capture (including warmup) are counted. Each rank had
+two 48-layer calls in run 1 and three in run 2.
 
-| Workload | Scheduler calls/rank | Async-serving P50 (ms/call) | Estimated scheduler elapsed P50/rank (ms) | Serving time saved (ms) | Cost/saved |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Random | 630 | 0.572 | 360.39 | 40,650.40 | 0.89% |
-| Phased English | 767 | 0.572 | 438.76 | 18,045.29 | 2.43% |
+| Rank | Run 1 total / calls | Run 1 mean ms/built layer | Run 2 total / calls | Run 2 mean ms/built layer |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 19.936 ms / 2 | 0.208 | 32.226 ms / 3 | 0.224 |
+| 1 | 13.920 ms / 2 | 0.145 | 20.806 ms / 3 | 0.144 |
+| 2 | 14.549 ms / 2 | 0.152 | 20.870 ms / 3 | 0.145 |
+| 3 | 14.037 ms / 2 | 0.146 | 21.713 ms / 3 | 0.151 |
 
-![Scheduler CPU cost and serving time saved](results/serving_nixl_20260905/scheduler_and_serving.png)
+Amortized mean = sum of full scheduling range durations / (number of cycle calls
+× 48). This is not a measured single-layer P50 or P99; 2–3 calls per rank are
+insufficient for useful tail estimates. Full calls average 6.94–10.74 ms.
+Precomputation may build schedules for layers not consumed before a cycle stops.
+The entire computation is charged here, rather than only the lookup during transfer.
 
-The compressed Chrome trace and summary are under
-`results/scheduler_profile_20260905/`. The separate migration-stat runs used
-the same server and benchmark parameters and are under
-`results/migration_profile_20260905/`. The complete NVTX-only serving traces,
-commands, benchmark output, and per-rank summary are under
-`results/serving_trace_20260909/nvtx_only_async_on/`.
+Compared with the separate per-layer-scheduling control, normalized mean cost
+fell from 0.603 to 0.163/0.166 ms per built layer in the two runs. This is
+preliminary evidence from one control run and two candidate runs, not a guarantee
+for other workloads. Concentrating CPU work may also change inference interference.
 
-```bash
-.venv/bin/python benchmarks/eplb_rebalance/analyze_optimized_profile.py \
-  benchmarks/eplb_rebalance/results/scheduler_profile_20260905/summary.csv \
-  benchmarks/eplb_rebalance/results/serving_nixl_20260905 \
-  benchmarks/eplb_rebalance/results/serving_nixl_20260905 \
-  --migration-log-dir \
-  benchmarks/eplb_rebalance/results/migration_profile_20260905 \
-  --serving-trace-summary \
-  benchmarks/eplb_rebalance/results/serving_trace_20260909/nvtx_only_async_on/scheduler_summary.csv
-```
+![Scheduling cost per built layer and full cycle](https://raw.githubusercontent.com/DOCCA0/vllm/refs/heads/ilp/benchmarks/eplb_rebalance/results/serving_trace_20260910/bulk_scheduler.png)
+
+Short profiled serving runs (not substitutes for the full benchmark above):
+
+| Run | Completed | Duration s | Output tok/s | TTFT P50/P99 ms | TPOT P50/P99 ms | E2EL P50/P99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Per-layer control | 8 | 121.40 | 19.77 | 17,072.31 / 17,074.23 | 348.90 / 387.54 | 121,393.62 / 121,395.09 |
+| Bulk run 1 | 8 | 113.91 | 21.07 | 17,451.02 / 17,453.58 | 322.59 / 362.21 | 113,905.64 / 113,908.33 |
+| Bulk run 2 | 8 | 117.56 | 20.42 | 20,347.43 / 20,350.26 | 325.11 / 376.77 | 117,554.23 / 117,557.05 |
+
+TTFT increased in these short runs; reduced scheduling cost does not establish
+that every serving metric improves.
+
+[Unmodified JSON, four-rank reports, and complete commands](https://github.com/DOCCA0/vllm/tree/ilp/benchmarks/eplb_rebalance/results/serving_trace_20260910).
+Open `bulk_precompute_retry/rank0.nsys-rep` or
+`bulk_precompute_repeat2/rank0.nsys-rep` in Nsight Systems 2024.5.1 or newer.
+
+### Historical cost/saved comparison
+
+For the earlier per-layer implementation only, the serving P50 of 0.572041
+ms/call gave these estimates against the earlier full async benchmark:
+
+| Workload | Layer calls/rank | Estimated elapsed/rank ms | Serving time saved ms | Estimated cost/saved |
+| --- | ---: | ---: | ---: | ---: |
+| Random | 630 | 360.39 | 40,650.40 | 0.89% |
+| Phased English | 767 | 438.76 | 18,045.29 | 2.43% |
+
+Estimated elapsed = layer calls × 0.572041 ms; cost/saved = estimated elapsed /
+serving time saved × 100%. Ranks run concurrently and are not summed.
+These are cross-run estimates, not measured overhead fractions.
+A cost/saved ratio for cycle-wide precomputation is **not yet measured**:
+the short profile compares two batching-on schedulers, not batching off/on.
+The new amortized time must not be multiplied into the old table and presented
+as a newly measured benefit.
