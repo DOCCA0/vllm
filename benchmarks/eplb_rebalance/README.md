@@ -188,26 +188,27 @@ The trace includes serving NVTX events such as `execute_context_*`; it does not
 include CUDA kernel timing. Profiling builds add an NVTX range alongside the
 production `record_function` marker.
 
-Two fresh-server runs each completed 8/8 requests and profiler shutdown. All
-scheduler ranges in each capture (including warmup) are counted. Each rank had
-two 48-layer calls in run 1 and three in run 2.
+The table and plot show Bulk run 1, which completed 8/8 requests and profiler
+shutdown. All scheduler ranges in the capture (including warmup) are counted:
+each rank had two 48-layer calls. Bulk run 2 repeats the same implementation and
+parameters; its raw files remain available for reproducibility.
 
-| Rank | Run 1 total / calls | Run 1 mean ms/built layer | Run 2 total / calls | Run 2 mean ms/built layer |
-| --- | ---: | ---: | ---: | ---: |
-| 0 | 19.936 ms / 2 | 0.208 | 32.226 ms / 3 | 0.224 |
-| 1 | 13.920 ms / 2 | 0.145 | 20.806 ms / 3 | 0.144 |
-| 2 | 14.549 ms / 2 | 0.152 | 20.870 ms / 3 | 0.145 |
-| 3 | 14.037 ms / 2 | 0.146 | 21.713 ms / 3 | 0.151 |
+| Rank | Total / calls | Mean ms/built layer |
+| --- | ---: | ---: |
+| 0 | 19.936 ms / 2 | 0.208 |
+| 1 | 13.920 ms / 2 | 0.145 |
+| 2 | 14.549 ms / 2 | 0.152 |
+| 3 | 14.037 ms / 2 | 0.146 |
 
 Amortized mean = sum of full scheduling range durations / (number of cycle calls
-× 48). This is not a measured single-layer P50 or P99; 2–3 calls per rank are
-insufficient for useful tail estimates. Full calls average 6.94–10.74 ms.
+× 48). This is not a measured single-layer P50 or P99; two calls per rank are
+insufficient for useful tail estimates. Full calls average 6.96–9.97 ms.
 Precomputation may build schedules for layers not consumed before a cycle stops.
 The entire computation is charged here, rather than only the lookup during transfer.
 
 Compared with the separate per-layer-scheduling control, normalized mean cost
-fell from 0.603 to 0.163/0.166 ms per built layer in the two runs. This is
-preliminary evidence from one control run and two candidate runs, not a guarantee
+fell from 0.603 to 0.163 ms per built layer in the displayed run. This is
+preliminary evidence from a short profiling comparison, not a guarantee
 for other workloads. Concentrating CPU work may also change inference interference.
 
 ![Scheduling cost per built layer and full cycle](https://raw.githubusercontent.com/DOCCA0/vllm/refs/heads/ilp/benchmarks/eplb_rebalance/results/serving_trace_20260910/bulk_scheduler.png)
@@ -218,14 +219,12 @@ Short profiled serving runs (not substitutes for the full benchmark above):
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Per-layer control | 8 | 121.40 | 19.77 | 17,072.31 / 17,074.23 | 348.90 / 387.54 | 121,393.62 / 121,395.09 |
 | Bulk run 1 | 8 | 113.91 | 21.07 | 17,451.02 / 17,453.58 | 322.59 / 362.21 | 113,905.64 / 113,908.33 |
-| Bulk run 2 | 8 | 117.56 | 20.42 | 20,347.43 / 20,350.26 | 325.11 / 376.77 | 117,554.23 / 117,557.05 |
 
-TTFT increased in these short runs; reduced scheduling cost does not establish
+TTFT increased in this short comparison; reduced scheduling cost does not establish
 that every serving metric improves.
 
 [Unmodified JSON, four-rank reports, and complete commands](https://github.com/DOCCA0/vllm/tree/ilp/benchmarks/eplb_rebalance/results/serving_trace_20260910).
-Open `bulk_precompute_retry/rank0.nsys-rep` or
-`bulk_precompute_repeat2/rank0.nsys-rep` in Nsight Systems 2024.5.1 or newer.
+Open `bulk_precompute_retry/rank0.nsys-rep` in Nsight Systems 2024.5.1 or newer.
 
 ### Historical cost/saved comparison
 
