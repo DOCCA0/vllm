@@ -103,7 +103,7 @@ def transfer_run_periodically(
             )
 
             migration_batches_by_layer = None
-            if state.parallel_config.eplb_config.enable_migration_batching:
+            if state.parallel_config.eplb_config.migration_batching_enabled:
                 profile_name = "eplb: schedule migration batches"
                 num_local_experts = model_state.model.expert_weights[0][0].shape[0]
                 # These CPU snapshots stay fixed throughout this migration cycle.
@@ -151,7 +151,7 @@ def transfer_run_periodically(
                     cuda_stream=cuda_stream,
                     layer_idx=layer_idx,
                     enable_migration_batching=(
-                        state.parallel_config.eplb_config.enable_migration_batching
+                        state.parallel_config.eplb_config.migration_batching_enabled
                     ),
                     migration_batches=(
                         migration_batches_by_layer[layer_idx]
