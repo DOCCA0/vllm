@@ -49,6 +49,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.models.interfaces import MixtureOfExperts
 from vllm.platforms import current_platform
 from vllm.utils.gpu_sync_debug import gpu_sync_allowed
+from vllm.utils.torch_utils import PIN_MEMORY
 
 from .async_worker import start_async_worker
 from .eplb_communicator import EplbCommunicator, create_eplb_communicator
@@ -898,9 +899,9 @@ class EplbState:
                         eplb_model_state.communicator,
                         is_profile,
                         rank_mapping,
-                        enable_migration_batching=(
-                            self.parallel_config.eplb_config.migration_batching_enabled
-                        ),
+                        # Sync EPLB pauses inference, so prioritize completing the
+                        # migration in one communication step.
+                        enable_migration_batching=False,
                     )
 
                     if not is_profile:
@@ -1301,6 +1302,8 @@ def _commit_eplb_maps_for_layer(
         f"Current number of physical experts: {dst.shape[0]}. New number of physical "
         f"experts {src.shape[0]}."
     )
+    if PIN_MEMORY and src.is_cpu:
+        src = src.new_empty(src.shape, pin_memory=True).copy_(src)
     dst.copy_(src, non_blocking=True)
 
     num_logical_experts = model_state.logical_to_physical_map.shape[1]
@@ -1312,6 +1315,8 @@ def _commit_eplb_maps_for_layer(
     src = new_replica_count
     dst = model_state.logical_replica_count[layer]
     assert src.shape == dst.shape
+    if PIN_MEMORY:
+        src = src.pin_memory()
     dst.copy_(src, non_blocking=True)
 
 
@@ -1329,12 +1334,14 @@ def _commit_eplb_maps(
     src = new_physical_to_logical_map
     dst = model_state.physical_to_logical_map
 
+    if PIN_MEMORY and src.is_cpu:
+        src = src.new_empty(src.shape, pin_memory=True).copy_(src)
     # Rare Case: When the number of physical experts has changed, discard the old
     # physical to logical expert map and use the new one. This only happens when the
     # number of GPUs available to vLLM changes while vLLM is running. Otherwise copy the
     # new map into the old one.
     if src.shape[1] != dst.shape[1]:
-        model_state.physical_to_logical_map = src.to(dst.device)
+        model_state.physical_to_logical_map = src.to(dst.device, non_blocking=True)
     else:
         dst.copy_(src, non_blocking=True)
 
@@ -1349,6 +1356,8 @@ def _commit_eplb_maps(
     # Commit logical_replica_count
     src = new_replica_count
     dst = model_state.logical_replica_count
+    if PIN_MEMORY:
+        src = src.pin_memory()
     dst.copy_(src, non_blocking=True)
 
 

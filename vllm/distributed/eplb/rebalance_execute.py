@@ -13,7 +13,6 @@ import numpy as np
 import torch
 from torch.distributed import ProcessGroup, all_gather
 
-import vllm.envs as envs
 from vllm.distributed.eplb.eplb_communicator import EplbCommunicator
 from vllm.distributed.eplb.eplb_utils import CpuGpuEvent
 from vllm.distributed.eplb.migration_scheduler import (
@@ -24,38 +23,6 @@ from vllm.logger import init_logger
 from vllm.utils.gpu_sync_debug import gpu_sync_allowed
 
 logger = init_logger(__name__)
-
-
-def _log_migration_stats(
-    flows: list[MigrationFlow],
-    num_batches: int,
-    num_local_experts: int,
-    old_indices: np.ndarray,
-    ep_rank: int,
-    layer_idx: int,
-) -> None:
-    if ep_rank != 0 or not flows:
-        return
-    world_size = old_indices.size // num_local_experts
-    counts = np.zeros(world_size, dtype=np.int64)
-    num_transfers = 0
-    for flow in flows:
-        flow_size = len(flow.expert_ids)
-        num_transfers += flow_size
-        counts[flow.src_rank] += flow_size
-        counts[flow.dst_rank] += flow_size
-    mean = float(counts.mean())
-    logger.info(
-        "EPLB migration stats: layer=%d transfers=%d flows=%d batches=%d "
-        "per-rank peak=%d mean=%.1f hotspot_ratio=%.2f",
-        layer_idx,
-        num_transfers,
-        len(flows),
-        num_batches,
-        int(counts.max()),
-        mean,
-        float(counts.max()) / mean if mean else 1.0,
-    )
 
 
 @dataclass
@@ -255,27 +222,11 @@ def _execute_migration_batches(
     expert_weights_buffers: Sequence[torch.Tensor],
     communicator: EplbCommunicator,
     layer_idx: int,
-    batches: list[list[MigrationFlow]] | None = None,
 ) -> None:
     """Execute all contention-aware migration batches for one layer."""
-    if batches is None:
-        profile_name = "eplb: schedule migration batches"
-        with (
-            torch.profiler.record_function(profile_name),
-            torch.cuda.nvtx.range(profile_name),
-        ):
-            batches = schedule_migration_batches(
-                num_local_experts, old_indices, new_indices
-            )
-    if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
-        flows = [flow for batch in batches for flow in batch]
-        _log_migration_stats(
-            flows,
-            len(batches),
-            num_local_experts,
-            old_indices,
-            ep_rank,
-            layer_idx,
+    with torch.profiler.record_function("eplb: schedule migration batches"):
+        batches = schedule_migration_batches(
+            num_local_experts, old_indices, new_indices
         )
     base = ep_rank * num_local_experts
     old_local = old_indices[base : base + num_local_experts]
@@ -333,7 +284,6 @@ def move_to_buffer(
     communicator: EplbCommunicator,
     layer_idx: int = 0,
     enable_migration_batching: bool = False,
-    migration_batches: list[list[MigrationFlow]] | None = None,
 ) -> TransferMetadata:
     """
     Rearranges expert weights during EPLB rebalancing.
@@ -352,7 +302,6 @@ def move_to_buffer(
         layer_idx: Index of the MoE layer being transferred.
         enable_migration_batching: Schedule remote transfers in batches where
             each rank communicates with at most one peer.
-        migration_batches: Optional batches precomputed for this layer.
 
     Returns:
         TransferMetadata: Metadata needed for completing remote weight transfers.
@@ -444,24 +393,10 @@ def move_to_buffer(
             expert_weights_buffers=expert_weights_buffers,
             communicator=communicator,
             layer_idx=layer_idx,
-            batches=migration_batches,
         )
         return transfer_metadata
 
-    if envs.VLLM_EPLB_LOG_MIGRATION_STATS:
-        batches = schedule_migration_batches(
-            num_local_experts, old_indices, new_indices
-        )
-        flows = [flow for batch in batches for flow in batch]
-        _log_migration_stats(
-            flows,
-            1,
-            num_local_experts,
-            old_indices,
-            ep_rank,
-            layer_idx,
-        )
-
+    # By default, submit all expert transfers in one communication step.
     communicator.set_transfer_context(old_indices, layer_idx)
 
     # 2. Post sends
@@ -624,7 +559,6 @@ def transfer_layer(
     rank_mapping: dict[int, int] | None = None,
     layer_idx: int = 0,
     enable_migration_batching: bool = False,
-    migration_batches: list[list[MigrationFlow]] | None = None,
 ) -> TransferMetadata:
     """
     Rearranges the expert weights in place according to the new expert indices.
@@ -649,7 +583,6 @@ def transfer_layer(
         layer_idx: Index of the MoE layer being transferred.
         enable_migration_batching: Schedule remote transfers in batches where
             each rank communicates with at most one peer.
-        migration_batches: Optional batches precomputed for this layer.
 
     Returns:
         TransferMetadata: Metadata needed for completing remote weight transfers,
@@ -699,7 +632,6 @@ def transfer_layer(
         communicator=communicator,
         layer_idx=layer_idx,
         enable_migration_batching=enable_migration_batching,
-        migration_batches=migration_batches,
     )
 
 
