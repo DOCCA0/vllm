@@ -899,7 +899,7 @@ class EplbState:
                         is_profile,
                         rank_mapping,
                         enable_migration_batching=(
-                            self.parallel_config.eplb_config.enable_migration_batching
+                            self.parallel_config.eplb_config.migration_batching_enabled
                         ),
                     )
 

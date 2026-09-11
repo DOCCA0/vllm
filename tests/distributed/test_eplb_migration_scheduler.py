@@ -44,6 +44,16 @@ def test_migration_batching_is_enabled_by_default_and_can_be_disabled() -> None:
     assert not EPLBConfig(enable_migration_batching=False).enable_migration_batching
 
 
+def test_migration_batching_only_applies_to_async_eplb() -> None:
+    assert EPLBConfig(use_async=True).migration_batching_enabled
+    assert not EPLBConfig(
+        use_async=True, enable_migration_batching=False
+    ).migration_batching_enabled
+    assert not EPLBConfig(
+        use_async=False, enable_migration_batching=True
+    ).migration_batching_enabled
+
+
 def test_schedule_migration_batches_is_deterministic() -> None:
     transfers = [
         (1, 3, 0),

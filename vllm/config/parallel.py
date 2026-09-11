@@ -102,8 +102,13 @@ class EPLBConfig:
     enable_migration_batching: bool = True
     """Schedule expert migrations in batches where each rank communicates with
     at most one peer. This reduces per-rank network contention at the cost of
-    additional sequential communication steps. Set to False to use one
-    communication step for all migrations."""
+    additional sequential communication steps. This option only applies to
+    async EPLB. Set to False to use one communication step for all migrations."""
+
+    @property
+    def migration_batching_enabled(self) -> bool:
+        """Whether contention-aware batching is active for this configuration."""
+        return self.use_async and self.enable_migration_batching
 
     @model_validator(mode="after")
     def _validate_eplb_config(self) -> Self:
