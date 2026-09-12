@@ -110,18 +110,12 @@ def transfer_run_periodically(
                 # Precompute all layer schedules once, but execute transfers one
                 # layer at a time below to preserve the migration lifecycle. This
                 # profiling range therefore covers scheduling for every MoE layer.
-                torch.cuda.nvtx.range_push(profile_name)
-                try:
-                    with torch.profiler.record_function(profile_name):
-                        migration_batches_by_layer = (
-                            schedule_migration_batches_for_layers(
-                                num_local_experts,
-                                physical_to_logical_map_cpu.numpy(),
-                                new_physical_to_logical_map.numpy(),
-                            )
-                        )
-                finally:
-                    torch.cuda.nvtx.range_pop()
+                with torch.profiler.record_function(profile_name):
+                    migration_batches_by_layer = schedule_migration_batches_for_layers(
+                        num_local_experts,
+                        physical_to_logical_map_cpu.numpy(),
+                        new_physical_to_logical_map.numpy(),
+                    )
 
             # Execute one EPLB layer transfer per model forward pass. Each iteration
             # of this loop will copy the new set of expert weights into
