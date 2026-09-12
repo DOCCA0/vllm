@@ -82,9 +82,10 @@ Batching raised output throughput by 2.28% and reduced TTFT P50/P99 by
 
 ![End-to-end improvement](results/serving_nixl_20260911_async_random500/e2e_improvement.png)
 
-Head-node combined RX+TX was sampled from Linux byte counters once per second;
-it is not a `vllm bench serve` metric. Batching reduced NIC P99 from
-599.81 MB/s to 538.40 MB/s (10.24%).
+The head node's total network traffic (bytes received + bytes transmitted) was
+sampled from Linux byte counters once per second; it is not a
+`vllm bench serve` metric. Batching reduced NIC P99 from 599.81 MB/s to
+538.40 MB/s (10.24%).
 
 ![NIC traffic over time](results/serving_nixl_20260911_async_random500/nic_timeseries.png)
 
@@ -98,17 +99,19 @@ The async batching-on case is captured with the same server, warm-up, and
 each report for `eplb: schedule migration batches`; one range is one scheduling
 call for all model layers. All ranks made 34 calls during the formal window.
 
-| Rank | Calls | P50/call (ms) | P99/call (ms) | Cumulative (ms) |
+| Rank | Calls | P50/call (ms) | P99/call (ms) | Total time across all calls (ms) |
 | ---: | ---: | ---: | ---: | ---: |
 | 0 | 34 | 7.819 | 17.536 | 302.081 |
 | 1 | 34 | 7.090 | 12.357 | 253.152 |
 | 2 | 34 | 7.035 | 16.104 | 255.239 |
 | 3 | 34 | 7.005 | 8.103 | 241.190 |
 
-Ranks schedule concurrently, so costs are not summed. Using the largest
-measured cumulative cost (302.081 ms) and the clean E2E saving
-(4,756.098 - 4,650.166 = 105.932 s), scheduler cost is 0.285% of serving time
-saved. The profiled run completed 500/500 requests in 4,652.217 s.
+The four ranks schedule concurrently, so their times are not added. Across the
+34 cycle-wide calls, rank 0 had the largest measured total scheduling time:
+302.081 ms. The independent clean A/B benchmark completed 105.932 s faster
+with batching. Comparing these measured values gives a
+scheduler-cost-to-serving-time-saved ratio of 0.285%. The profiled run
+completed 500/500 requests in 4,652.217 s.
 
 Raw four-rank traces, benchmark output, timestamps, profile summary, and exact
 commands are in `results/serving_nixl_20260911_async_random500_profile/`.
