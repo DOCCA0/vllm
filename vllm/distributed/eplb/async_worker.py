@@ -108,7 +108,8 @@ def transfer_run_periodically(
                 num_local_experts = model_state.model.expert_weights[0][0].shape[0]
                 # The placement snapshots stay fixed for this rebalance cycle.
                 # Precompute all layer schedules once, but execute transfers one
-                # layer at a time below to preserve the migration lifecycle.
+                # layer at a time below to preserve the migration lifecycle. This
+                # profiling range therefore covers scheduling for every MoE layer.
                 with torch.profiler.record_function(profile_name):
                     migration_batches_by_layer = schedule_migration_batches_for_layers(
                         num_local_experts,
