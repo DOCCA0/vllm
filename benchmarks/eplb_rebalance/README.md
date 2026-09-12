@@ -99,12 +99,12 @@ The async batching-on case is captured with the same server, warm-up, and
 each report for `eplb: schedule migration batches`; one range is one scheduling
 call for all model layers. All ranks made 34 calls during the formal window.
 
-| Rank | Calls | P50/call (ms) | P99/call (ms) | Total time across all calls (ms) |
-| ---: | ---: | ---: | ---: | ---: |
-| 0 | 34 | 7.819 | 17.536 | 302.081 |
-| 1 | 34 | 7.090 | 12.357 | 253.152 |
-| 2 | 34 | 7.035 | 16.104 | 255.239 |
-| 3 | 34 | 7.005 | 8.103 | 241.190 |
+| Rank | Calls | P50/call (ms) | Total time across all calls (ms) |
+| ---: | ---: | ---: | ---: |
+| 0 | 34 | 7.819 | 302.081 |
+| 1 | 34 | 7.090 | 253.152 |
+| 2 | 34 | 7.035 | 255.239 |
+| 3 | 34 | 7.005 | 241.190 |
 
 The four ranks schedule concurrently, so their times are not added. Across the
 34 cycle-wide calls, rank 0 had the largest measured total scheduling time:
