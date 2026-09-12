@@ -24,10 +24,10 @@ def schedule_migration_batches(
 ) -> list[list[MigrationFlow]]:
     """Schedule expert migrations without per-rank communication contention.
 
-    A migration flow coalesces all experts assigned to the same source and
-    destination rank. Flows are then assigned to the first batch whose ranks do
-    not overlap with the flow's endpoints. Thus, each rank communicates with at
-    most one peer in a batch while independent rank pairs can run concurrently.
+    Experts assigned to the same source and destination ranks form one flow.
+    Each flow is placed in the first batch that does not already use either
+    endpoint, so a rank communicates with at most one peer in each batch while
+    independent rank pairs can transfer concurrently.
     """
     assert old_indices.shape == new_indices.shape
     recv_ranks_by_expert: dict[int, list[int]] = {}
@@ -103,7 +103,27 @@ def schedule_migration_batches(
     return batches
 
 
+def schedule_migration_batches_for_layers(
+    num_local_experts: int,
+    old_indices: np.ndarray,
+    new_indices: np.ndarray,
+) -> list[list[list[MigrationFlow]]]:
+    """Precompute the independent migration schedule for every MoE layer.
+
+    This reduces scheduling entry points from once per layer to once per
+    rebalance cycle. Only CPU scheduling is grouped; transfers remain ordered
+    by layer and preserve each layer's batch boundaries.
+    """
+    assert old_indices.shape == new_indices.shape
+    assert old_indices.ndim == 2
+    return [
+        schedule_migration_batches(num_local_experts, old_layer, new_layer)
+        for old_layer, new_layer in zip(old_indices, new_indices)
+    ]
+
+
 __all__ = [
     "MigrationFlow",
     "schedule_migration_batches",
+    "schedule_migration_batches_for_layers",
 ]

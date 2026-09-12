@@ -899,9 +899,9 @@ class EplbState:
                         eplb_model_state.communicator,
                         is_profile,
                         rank_mapping,
-                        # Sync EPLB pauses inference, so prioritize completing the
-                        # migration in one communication step.
-                        enable_migration_batching=False,
+                        enable_migration_batching=(
+                            self.parallel_config.eplb_config.migration_batching_enabled
+                        ),
                     )
 
                     if not is_profile:
