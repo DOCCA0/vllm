@@ -113,5 +113,7 @@ with batching. Comparing these measured values gives a
 scheduler-cost-to-serving-time-saved ratio of 0.285%. The profiled run
 completed 500/500 requests in 4,652.217 s.
 
+![Scheduler cost versus serving time saved](results/serving_nixl_20260911_async_random500_profile/scheduler_cost_vs_saved.png)
+
 Raw four-rank traces, benchmark output, timestamps, profile summary, and exact
 commands are in `results/serving_nixl_20260911_async_random500_profile/`.
