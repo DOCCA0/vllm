@@ -45,10 +45,11 @@ class ECMPNetwork:
 
 @dataclass(frozen=True)
 class ProblemConfig:
-    """Hotspot-contention model for migration batch scheduling."""
+    """Contention-aware model for migration batch scheduling."""
 
     time_limit: float | None
     mip_rel_gap: float | None
+    batch_overhead: float
     network: ECMPNetwork
 
 
@@ -88,8 +89,11 @@ def load_problem(path: Path) -> tuple[list[MigrationInstruction], ProblemConfig]
         mip_rel_gap=(
             None if cfg.get("mip_rel_gap") is None else float(cfg["mip_rel_gap"])
         ),
+        batch_overhead=float(cfg["batch_overhead"]),
         network=network,
     )
+    if config.batch_overhead < 0:
+        raise ValueError("config.batch_overhead must be non-negative")
     return instructions, config
 
 
@@ -142,64 +146,47 @@ def _validate_unique_links(links: list[NetworkLink], directed: bool) -> None:
         seen.add(pair)
 
 
-def _build_hierarchical_network(
-    data: dict[str, Any], link_capacity: float, traffic: Any
-) -> ECMPNetwork:
-    """Build a 3-tier GPU -> NVSwitch -> cluster-fabric topology.
-
-    Layer 1 (GPU): ranks 0..num_gpus-1.
-    Layer 2 (node): every node owns nvswitches_per_node NVSwitch vertices
-    (default 1); each of the node's gpus_per_node GPUs connects to all of
-    them with nvlink_capacity links (default 18x the fabric capacity, i.e.
-    900 GB/s NVLink 4 vs 50 GB/s NDR 400G). A single NVSwitch per node makes
-    every pair's shortest path unique and ECMP degenerates to 1.0 per link;
-    two or more NVSwitches per node create equal-cost paths through each
-    switch, which is what gives ECMP real alternatives to split over.
-    Layer 3 (cluster fabric): the NVSwitches interconnect over IB/RoCE
-    via one spine vertex with fabric_capacity links.
-    """
+def _build_server_network(data: dict[str, Any], traffic: Any) -> ECMPNetwork:
+    """Build a two-tier GPU -> server -> inter-server network topology."""
 
     try:
         num_gpus = int(data["num_gpus"])
-        gpus_per_node = int(data["gpus_per_node"])
+        gpus_per_server = int(data["gpus_per_server"])
+        local_capacity = float(data["local_capacity"])
+        network_capacity = float(data["network_capacity"])
     except KeyError as exc:
         raise ValueError(
-            "hierarchical network needs num_gpus and gpus_per_node"
+            "server network needs num_gpus, gpus_per_server, local_capacity, "
+            "and network_capacity"
         ) from exc
-    if num_gpus <= 0 or gpus_per_node <= 0:
-        raise ValueError("num_gpus and gpus_per_node must be positive integers")
-    if num_gpus % gpus_per_node != 0:
-        raise ValueError("num_gpus must be a multiple of gpus_per_node")
-    nvswitches_per_node = int(data.get("nvswitches_per_node", 1))
-    if nvswitches_per_node <= 0:
-        raise ValueError("nvswitches_per_node must be a positive integer")
+    if num_gpus <= 0 or gpus_per_server <= 0:
+        raise ValueError("num_gpus and gpus_per_server must be positive integers")
+    if num_gpus % gpus_per_server != 0:
+        raise ValueError("num_gpus must be a multiple of gpus_per_server")
+    if local_capacity <= 0 or network_capacity <= 0:
+        raise ValueError("local_capacity and network_capacity must be positive")
 
-    num_nodes = num_gpus // gpus_per_node
-    nvlink_capacity = float(data.get("nvlink_capacity", 18.0 * link_capacity))
-    fabric_capacity = float(data.get("fabric_capacity", link_capacity))
-    if nvlink_capacity <= 0 or fabric_capacity <= 0:
-        raise ValueError("nvlink_capacity and fabric_capacity must be positive")
-    nvlink_background = _background_fraction(traffic, "nvlink")
-    fabric_background = _background_fraction(traffic, "fabric")
-
-    spine = num_gpus + num_nodes * nvswitches_per_node
-    roles = {spine: "Cluster spine (IB/RoCE)"}
+    num_servers = num_gpus // gpus_per_server
+    local_background = _background_fraction(traffic, "local")
+    network_background = _background_fraction(traffic, "network")
+    shared_network = num_gpus + num_servers
+    roles = {shared_network: "Inter-server network"}
     links: list[NetworkLink] = []
-    for node in range(num_nodes):
-        for index in range(nvswitches_per_node):
-            switch = num_gpus + node * nvswitches_per_node + index
-            roles[switch] = f"Node {node} NVSwitch {index}"
-            for gpu in range(node * gpus_per_node, (node + 1) * gpus_per_node):
-                links.append(
-                    NetworkLink(gpu, switch, nvlink_capacity, nvlink_background)
-                )
-            links.append(NetworkLink(switch, spine, fabric_capacity, fabric_background))
+    for server in range(num_servers):
+        endpoint = num_gpus + server
+        roles[endpoint] = f"Server {server} network endpoint"
+        start = server * gpus_per_server
+        for gpu in range(start, start + gpus_per_server):
+            links.append(NetworkLink(gpu, endpoint, local_capacity, local_background))
+        links.append(
+            NetworkLink(endpoint, shared_network, network_capacity, network_background)
+        )
 
     _validate_unique_links(links, directed=False)
     return ECMPNetwork(
         links=tuple(links),
         directed=False,
-        link_capacity=link_capacity,
+        link_capacity=network_capacity,
         num_gpus=num_gpus,
         vertex_roles=roles,
     )
@@ -214,8 +201,8 @@ def _load_network(data: Any, cfg: dict[str, Any]) -> ECMPNetwork | None:
         raise ValueError("network.link_capacity must be positive")
 
     traffic = data.get("inference_traffic", cfg.get("inference_traffic"))
-    if "num_gpus" in data or "gpus_per_node" in data:
-        return _build_hierarchical_network(data, link_capacity, traffic)
+    if "num_gpus" in data or "gpus_per_server" in data:
+        return _build_server_network(data, traffic)
 
     if "links" not in data:
         raise ValueError("network.links must be provided when network is set")
@@ -262,18 +249,6 @@ def _background_loads(network: ECMPNetwork) -> dict[tuple[int, int], float]:
         if not network.directed:
             loads[(link.dst_rank, link.src_rank)] = fraction * capacity
     return loads
-
-
-def _effective_capacities(network: ECMPNetwork) -> dict[tuple[int, int], float]:
-    """Per-directed-link capacity left for migrations after reserving the
-    sustained inference traffic rate on that link."""
-
-    capacities = _link_capacities(network)
-    background = _background_loads(network)
-    return {
-        link: capacity - background.get(link, 0.0)
-        for link, capacity in capacities.items()
-    }
 
 
 def _network_adjacency(
@@ -377,12 +352,12 @@ def _clean_float(value: float) -> float:
 def solve_with_scipy(
     instructions: list[MigrationInstruction], config: ProblemConfig
 ) -> dict[str, Any]:
-    """Solve the discrete-time ILP with scipy.optimize.milp."""
+    """Solve rank-disjoint batching with lexicographic objectives."""
 
     try:
         import numpy as np
         from scipy.optimize import Bounds, LinearConstraint, milp
-        from scipy.sparse import lil_matrix
+        from scipy.sparse import lil_matrix, vstack
     except ImportError as exc:
         raise RuntimeError(
             "This solver needs scipy>=1.11. Install it in the vLLM venv with: "
@@ -390,19 +365,18 @@ def solve_with_scipy(
         ) from exc
 
     n = len(instructions)
-    # One migration per batch is always feasible (each migration's path
-    # fractions fit the effective capacities, checked below), so n batches
-    # are a sufficient upper bound; unused batches simply take zero time.
     batch_count = n
     ecmp_link_fractions = compute_ecmp_link_fractions(instructions, config.network)
     links = sorted(
         {link for fractions in ecmp_link_fractions.values() for link in fractions}
     )
-    effective_capacities = _effective_capacities(config.network)
+    capacities = _link_capacities(config.network)
     background_loads = _background_loads(config.network)
     x_count = n * batch_count
-    batch_time_offset = x_count
-    var_count = x_count + batch_count
+    active_offset = x_count
+    batch_time_offset = active_offset + batch_count
+    peak_idx = batch_time_offset + batch_count
+    var_count = peak_idx + 1
 
     def x_idx(i: int, batch: int) -> int:
         return i * batch_count + batch
@@ -410,47 +384,66 @@ def solve_with_scipy(
     def batch_time_idx(batch: int) -> int:
         return batch_time_offset + batch
 
+    def active_idx(batch: int) -> int:
+        return active_offset + batch
+
     rows: list[tuple[dict[int, float], float, float]] = []
 
-    # Every migration is assigned to exactly one batch.
-    for i, inst in enumerate(instructions):
+    for i in range(n):
         rows.append(({x_idx(i, b): 1.0 for b in range(batch_count)}, 1.0, 1.0))
 
-    # Hard per-batch link capacity: one wave cannot push more concurrent
-    # migration traffic over a link than its effective capacity. This is what
-    # forces migrations into multiple waves — a purely soft time constraint
-    # would always admit a single-wave optimum.
-    for i in range(n):
-        for link, fraction in ecmp_link_fractions[i].items():
-            if fraction > effective_capacities[link] + 1e-9:
-                raise ValueError(
-                    f"migration {i} ({instructions[i].src_rank}->"
-                    f"{instructions[i].dst_rank}) needs {fraction:.6g} on link "
-                    f"{_link_label(link)} above its effective capacity "
-                    f"{effective_capacities[link]:.6g}; increase link capacity "
-                    "or lower inference_traffic"
-                )
+    pair_groups: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for i, inst in enumerate(instructions):
+        pair_groups[(inst.src_rank, inst.dst_rank)].append(i)
+    representatives = [ids[0] for ids in pair_groups.values()]
+    for ids in pair_groups.values():
+        for i in ids[1:]:
+            for b in range(batch_count):
+                rows.append(({x_idx(i, b): 1.0, x_idx(ids[0], b): -1.0}, 0.0, 0.0))
+
+    # x <= y and y is a contiguous prefix, removing empty-batch symmetry.
     for b in range(batch_count):
-        for link in links:
+        for i in representatives:
+            rows.append(
+                (
+                    {x_idx(i, b): 1.0, active_idx(b): -1.0},
+                    -float("inf"),
+                    0.0,
+                )
+            )
+    for b in range(batch_count - 1):
+        rows.append(({active_idx(b): -1.0, active_idx(b + 1): 1.0}, -float("inf"), 0.0))
+
+    # PR #52641 coalesces each directed pair into one flow and permits at most
+    # one peer per rank in each batch.
+    ranks = sorted(
+        {inst.src_rank for inst in instructions}
+        | {inst.dst_rank for inst in instructions}
+    )
+    for b in range(batch_count):
+        for rank in ranks:
             terms = {
-                x_idx(i, b): fraction
-                for i in range(n)
-                if (fraction := ecmp_link_fractions[i].get(link, 0.0))
+                x_idx(i, b): 1.0
+                for i in representatives
+                if rank in (instructions[i].src_rank, instructions[i].dst_rank)
             }
             if terms:
-                rows.append((terms, -float("inf"), effective_capacities[link]))
+                rows.append((terms, -float("inf"), 1.0))
 
-    # Batch time is determined by the most loaded normalized fabric link.
-    # Sustained inference traffic reserves part of each link's bandwidth, so
-    # migrations only see the remaining effective capacity.
+    # Transfer time uses physical capacity. Inference traffic is added only to
+    # the separate contention metric instead of making migrations appear faster.
     for b in range(batch_count):
         for link in links:
-            terms = {batch_time_idx(b): -effective_capacities[link]}
+            terms = {batch_time_idx(b): -capacities[link]}
+            contention_terms = {peak_idx: -1.0}
             for i in range(n):
                 fraction = ecmp_link_fractions[i].get(link, 0.0)
                 if fraction:
                     terms[x_idx(i, b)] = terms.get(x_idx(i, b), 0.0) + fraction
+                    contention_terms[x_idx(i, b)] = fraction / capacities[link]
             rows.append((terms, -float("inf"), 0.0))
+            background_fraction = background_loads.get(link, 0.0) / capacities[link]
+            rows.append((contention_terms, -float("inf"), -background_fraction))
 
     matrix = lil_matrix((len(rows), var_count), dtype=float)
     lb = np.empty(len(rows), dtype=float)
@@ -461,32 +454,74 @@ def solve_with_scipy(
         lb[r] = lower
         ub[r] = upper
 
-    c = np.zeros(var_count, dtype=float)
-    for b in range(batch_count):
-        c[batch_time_idx(b)] = 1.0
     integrality = np.zeros(var_count, dtype=int)
-    integrality[:x_count] = 1
+    integrality[:batch_time_offset] = 1
     lower_bounds = np.zeros(var_count, dtype=float)
     upper_bounds = np.ones(var_count, dtype=float)
-    min_capacity = min(effective_capacities[link] for link in links)
+    min_capacity = min(capacities[link] for link in links)
     upper_bounds[batch_time_offset:] = n / min_capacity
+    upper_bounds[peak_idx] = 1.0 + n / min_capacity
     options: dict[str, Any] = {}
     if config.time_limit is not None:
         options["time_limit"] = config.time_limit
     if config.mip_rel_gap is not None:
         options["mip_rel_gap"] = config.mip_rel_gap
 
-    result = milp(
-        c=c,
-        integrality=integrality,
-        bounds=Bounds(lower_bounds, upper_bounds),
-        constraints=LinearConstraint(matrix.tocsr(), lb, ub),
-        options=options,
-    )
-    if not result.success:
-        raise RuntimeError(
-            f"MILP failed: status={result.status}, message={result.message}"
+    def run_milp(
+        objective: Any,
+        extra_rows: list[tuple[dict[int, float], float, float]] | None = None,
+    ) -> Any:
+        current_matrix = matrix.tocsr()
+        current_lb = lb
+        current_ub = ub
+        if extra_rows:
+            extra_matrix = lil_matrix((len(extra_rows), var_count), dtype=float)
+            extra_lb = np.empty(len(extra_rows), dtype=float)
+            extra_ub = np.empty(len(extra_rows), dtype=float)
+            for r, (terms, lower, upper) in enumerate(extra_rows):
+                for c, value in terms.items():
+                    extra_matrix[r, c] = value
+                extra_lb[r] = lower
+                extra_ub[r] = upper
+            current_matrix = vstack([current_matrix, extra_matrix.tocsr()])
+            current_lb = np.concatenate([lb, extra_lb])
+            current_ub = np.concatenate([ub, extra_ub])
+        result = milp(
+            c=objective,
+            integrality=integrality,
+            bounds=Bounds(lower_bounds, upper_bounds),
+            constraints=LinearConstraint(current_matrix, current_lb, current_ub),
+            options=options,
         )
+        if not result.success:
+            raise RuntimeError(
+                f"MILP failed: status={result.status}, message={result.message}"
+            )
+        return result
+
+    batch_objective = np.zeros(var_count, dtype=float)
+    batch_objective[active_offset:batch_time_offset] = 1.0
+    batch_result = run_milp(batch_objective)
+    optimal_batch_count = int(round(batch_result.fun))
+    fixed_batch_count = [
+        (
+            {active_idx(b): 1.0 for b in range(batch_count)},
+            float(optimal_batch_count),
+            float(optimal_batch_count),
+        )
+    ]
+
+    contention_objective = np.zeros(var_count, dtype=float)
+    contention_objective[peak_idx] = 1.0
+    contention_result = run_milp(contention_objective, fixed_batch_count)
+    optimal_peak = float(contention_result.fun)
+
+    time_objective = np.zeros(var_count, dtype=float)
+    time_objective[batch_time_offset:peak_idx] = 1.0
+    result = run_milp(
+        time_objective,
+        fixed_batch_count + [({peak_idx: 1.0}, -float("inf"), optimal_peak + 1e-8)],
+    )
 
     schedule: list[dict[str, Any]] = []
     values = result.x
@@ -526,17 +561,72 @@ def solve_with_scipy(
         ecmp_link_fractions,
         background_loads,
     )
-    total_batch_time = sum(batch["batch_time"] for batch in batches)
+    unbatched = summarize_schedule(
+        build_unbatched_schedule(instructions), instructions, config
+    )
+    optimal = summarize_schedule(schedule, instructions, config)
     return {
-        "objective_value": _clean_float(total_batch_time),
-        "lower_bound": float(result.mip_dual_bound)
-        if getattr(result, "mip_dual_bound", None) is not None
-        else None,
-        "mip_gap": float(result.mip_gap)
-        if getattr(result, "mip_gap", None) is not None
-        else None,
+        "objective": {
+            "batch_count": optimal_batch_count,
+            "peak_total_link_utilization": _clean_float(optimal_peak),
+            "migration_time": optimal["migration_time"],
+        },
+        "unbatched_lower_bound": unbatched,
+        "optimal": optimal,
         "schedule": schedule,
         "batches": batches,
+    }
+
+
+def _schedule_item(
+    migration_id: int, inst: MigrationInstruction, batch: int
+) -> dict[str, Any]:
+    return {
+        "migration_id": migration_id,
+        "layer": inst.layer,
+        "expert": inst.expert,
+        "src": inst.src_rank,
+        "dst": inst.dst_rank,
+        "batch": batch,
+        "start": batch,
+        "end": batch + 1,
+    }
+
+
+def build_unbatched_schedule(
+    instructions: list[MigrationInstruction],
+) -> list[dict[str, Any]]:
+    return [_schedule_item(i, inst, 0) for i, inst in enumerate(instructions)]
+
+
+def summarize_schedule(
+    schedule: list[dict[str, Any]],
+    instructions: list[MigrationInstruction],
+    config: ProblemConfig,
+) -> dict[str, Any]:
+    fractions = compute_ecmp_link_fractions(instructions, config.network)
+    batches = summarize_batches(
+        schedule,
+        len(instructions),
+        config.network,
+        fractions,
+        _background_loads(config.network),
+    )
+    batch_count = len(batches)
+    transfer_time = sum(batch["batch_time"] for batch in batches)
+    return {
+        "batch_count": batch_count,
+        "transfer_time": _clean_float(transfer_time),
+        "execute_overhead": _clean_float(batch_count * config.batch_overhead),
+        "migration_time": _clean_float(
+            transfer_time + batch_count * config.batch_overhead
+        ),
+        "peak_migration_link_utilization": _clean_float(
+            max(batch["peak_migration_link_utilization"] for batch in batches)
+        ),
+        "peak_total_link_utilization": _clean_float(
+            max(batch["peak_total_link_utilization"] for batch in batches)
+        ),
     }
 
 
@@ -548,7 +638,7 @@ def summarize_batches(
     background_loads: dict[tuple[int, int], float] | None = None,
 ) -> list[dict[str, Any]]:
     batches: list[dict[str, Any]] = []
-    effective_capacities = _effective_capacities(network)
+    capacities = _link_capacities(network)
     background_loads = background_loads or {}
     for t in range(batch_count):
         active = [item for item in schedule if item["start"] <= t < item["end"]]
@@ -575,11 +665,24 @@ def summarize_batches(
             for link, fraction in ecmp_link_fractions[migration_id].items():
                 link_loads[link] = link_loads.get(link, 0.0) + fraction
         link_times = {
-            link: load / effective_capacities[link]
-            for link, load in sorted(link_loads.items())
+            link: load / capacities[link] for link, load in sorted(link_loads.items())
+        }
+        migration_utilization = {
+            link: load / capacities[link] for link, load in link_loads.items()
+        }
+        total_utilization = {
+            link: migration_utilization[link]
+            + background_loads.get(link, 0.0) / capacities[link]
+            for link in link_loads
         }
         batch_time = max(link_times.values())
         batch_summary["batch_time"] = _clean_float(batch_time)
+        batch_summary["peak_migration_link_utilization"] = _clean_float(
+            max(migration_utilization.values())
+        )
+        batch_summary["peak_total_link_utilization"] = _clean_float(
+            max(total_utilization.values())
+        )
         batch_summary["max_link_load"] = _clean_float(max(link_loads.values()))
         batch_summary["link_capacity"] = network.link_capacity
         batch_summary["link_load"] = {
@@ -734,16 +837,40 @@ def build_link_mermaid_diagram(
         schedule,
         ecmp_link_fractions,
     )
-    capacities = _effective_capacities(network)
+    capacities = _link_capacities(network)
     roles = network.vertex_roles or {}
+
+    server_endpoints: dict[int, int] = {}
+    for rank, role in roles.items():
+        parts = role.split()
+        if len(parts) >= 4 and parts[0] == "Server" and parts[2] == "network":
+            server_endpoints[rank] = int(parts[1])
+    gpu_servers: dict[int, int] = {}
+    for rank in endpoint_ranks:
+        adjacent_servers = {
+            server_endpoints[other]
+            for link in network.links
+            for other in (
+                [link.dst_rank]
+                if link.src_rank == rank
+                else [link.src_rank]
+                if link.dst_rank == rank
+                else []
+            )
+            if other in server_endpoints
+        }
+        if len(adjacent_servers) == 1:
+            gpu_servers[rank] = adjacent_servers.pop()
+
     lines = [
         "flowchart LR",
         "  classDef gpu fill:#e9fff5,stroke:#23734d,stroke-width:2px;",
         "  classDef fabric fill:#fff4df,stroke:#9a6200,stroke-width:2px;",
-        "  subgraph LINKS[ECMP communication links]",
+        "  subgraph LINKS[Two-tier communication links]",
         "    direction LR",
     ]
-    for rank in ranks:
+
+    def append_node(rank: int, indent: str) -> None:
         node = _mermaid_id("link", rank)
         if rank in endpoint_ranks:
             role = f"GPU rank {rank}"
@@ -751,8 +878,51 @@ def build_link_mermaid_diagram(
         else:
             role = f"{roles.get(rank, 'Fabric switch')} ({rank})"
             node_class = "fabric"
-        lines.append(f'    {node}["{role}"]')
-        lines.append(f"    class {node} {node_class}")
+        lines.append(f'{indent}{node}["{role}"]')
+        lines.append(f"{indent}class {node} {node_class}")
+
+    grouped_ranks: set[int] = set()
+    for server_id in sorted(set(gpu_servers.values()) | set(server_endpoints.values())):
+        node_gpus = sorted(
+            rank
+            for rank, rank_server in gpu_servers.items()
+            if rank_server == server_id
+        )
+        endpoints = sorted(
+            rank
+            for rank, endpoint_server in server_endpoints.items()
+            if endpoint_server == server_id
+        )
+        grouped_ranks.update(node_gpus)
+        grouped_ranks.update(endpoints)
+        server_group = _mermaid_id("server", server_id)
+        gpu_group = _mermaid_id("gpus", server_id)
+        endpoint_group = _mermaid_id("endpoint", server_id)
+        lines.extend(
+            [
+                f'    subgraph {server_group}["Server {server_id}"]',
+                "      direction LR",
+                f'      subgraph {gpu_group}["GPU ranks"]',
+                "        direction TB",
+            ]
+        )
+        for rank in node_gpus:
+            append_node(rank, "        ")
+        lines.extend(
+            [
+                "      end",
+                f'      subgraph {endpoint_group}["Network endpoint"]',
+                "        direction TB",
+            ]
+        )
+        for rank in endpoints:
+            append_node(rank, "        ")
+        lines.extend(["      end", "    end"])
+
+    for rank in ranks:
+        if rank not in grouped_ranks:
+            append_node(rank, "    ")
+
     edge = "-->" if network.directed else "---"
     hot_edges: list[int] = []
     drawn_links = [

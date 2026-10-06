@@ -1,17 +1,17 @@
 {
   "config": {
     "time_limit": 30,
-    "mip_rel_gap": 0
+    "mip_rel_gap": 0,
+    "batch_overhead": 0.05
   },
   "network": {
     "num_gpus": 8,
-    "gpus_per_node": 4,
-    "nvswitches_per_node": 2,
-    "nvlink_capacity": 18.0,
-    "fabric_capacity": 2.0,
+    "gpus_per_server": 2,
+    "local_capacity": 18.0,
+    "network_capacity": 2.0,
     "inference_traffic": {
-      "nvlink": 0.4,
-      "fabric": 0.6
+      "local": 0.4,
+      "network": 0.6
     }
   },
   "migrations": [
