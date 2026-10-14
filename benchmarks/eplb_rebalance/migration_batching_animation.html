@@ -1,0 +1,902 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EPLB Migration Batching</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07111f;
+      --panel: #0d1a2b;
+      --panel-2: #122238;
+      --line: #233751;
+      --text: #eef6ff;
+      --muted: #91a4bd;
+      --cyan: #38d9f5;
+      --green: #71e7a5;
+      --amber: #ffbf69;
+      --red: #ff7185;
+      --violet: #a78bfa;
+      --b0: #38d9f5;
+      --b1: #a78bfa;
+      --b2: #ffbf69;
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% 0%, rgba(56, 217, 245, .10), transparent 30%),
+        radial-gradient(circle at 90% 10%, rgba(167, 139, 250, .10), transparent 30%),
+        var(--bg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+
+    button, input { font: inherit; }
+
+    .page {
+      width: min(1500px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 30px 0 34px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 20px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--cyan);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 54px);
+      line-height: 1.02;
+      letter-spacing: -.045em;
+    }
+
+    .subtitle {
+      max-width: 710px;
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .rule-badge {
+      flex: 0 0 auto;
+      max-width: 310px;
+      padding: 13px 16px;
+      border: 1px solid rgba(113, 231, 165, .35);
+      border-radius: 14px;
+      color: #caffdf;
+      background: rgba(113, 231, 165, .08);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .rule-badge strong { color: var(--green); }
+
+    .controls {
+      display: grid;
+      grid-template-columns: auto auto auto 1fr auto;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(13, 26, 43, .86);
+      backdrop-filter: blur(12px);
+    }
+
+    .btn {
+      min-height: 40px;
+      padding: 0 16px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      color: var(--text);
+      background: var(--panel-2);
+      cursor: pointer;
+      transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    }
+
+    .btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      border-color: #426185;
+      background: #172b46;
+    }
+
+    .btn:disabled { opacity: .35; cursor: not-allowed; }
+    .btn.primary { border-color: #248ca4; background: #0c4e61; }
+    .btn.playing { border-color: #be883c; background: #5f4219; }
+
+    .timeline-wrap {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 12px;
+      min-width: 180px;
+      padding: 0 8px;
+    }
+
+    #timeline { width: 100%; accent-color: var(--cyan); cursor: pointer; }
+    #counter { min-width: 58px; color: var(--muted); font-size: 12px; text-align: right; }
+
+    .speed {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    #speed {
+      width: 92px;
+      accent-color: var(--amber);
+      cursor: pointer;
+    }
+
+    .phase-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .phase {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: #70859f;
+      background: rgba(13, 26, 43, .55);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-align: center;
+      text-transform: uppercase;
+      transition: .25s ease;
+    }
+
+    .phase.active {
+      border-color: rgba(56, 217, 245, .65);
+      color: var(--cyan);
+      background: rgba(56, 217, 245, .08);
+      box-shadow: inset 0 -2px 0 var(--cyan);
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(260px, .82fr) minmax(420px, 1.28fr) minmax(300px, .95fr);
+      gap: 14px;
+      min-height: 615px;
+    }
+
+    .panel {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(18, 34, 56, .94), rgba(10, 22, 38, .96));
+      box-shadow: 0 18px 50px rgba(0, 0, 0, .18);
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 58px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-head h2 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+    .panel-head span { color: var(--muted); font-size: 11px; }
+    .panel-body { padding: 16px; }
+
+    .flow-list { display: grid; gap: 9px; }
+
+    .flow-card {
+      position: relative;
+      display: grid;
+      grid-template-columns: 32px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: var(--text);
+      background: #101f33;
+      text-align: left;
+      cursor: pointer;
+      transition: opacity .2s ease, transform .2s ease, border-color .2s ease;
+    }
+
+    .flow-card:hover { transform: translateX(3px); border-color: #426185; }
+    .flow-card.current { border-color: var(--cyan); background: rgba(56, 217, 245, .09); }
+    .flow-card.placed { opacity: .48; }
+    .flow-card.merged { border-color: rgba(113, 231, 165, .55); }
+
+    .flow-id {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 9px;
+      color: #06111d;
+      background: var(--cyan);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .flow-route { font-size: 14px; font-weight: 800; }
+    .flow-experts { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .flow-state { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+
+    .raw-note {
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      border: 1px dashed rgba(113, 231, 165, .45);
+      border-radius: 11px;
+      color: #bcefd1;
+      background: rgba(113, 231, 165, .06);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .engine { display: grid; grid-template-rows: auto 1fr auto; }
+
+    .decision {
+      margin: 16px 16px 0;
+      padding: 15px 16px;
+      border: 1px solid #2b4465;
+      border-radius: 14px;
+      background: #0a1728;
+    }
+
+    .decision-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .decision-kicker {
+      color: var(--cyan);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+
+    .decision-result {
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .decision-result.fit { color: var(--green); }
+    .decision-result.conflict { color: var(--red); }
+    .decision-result.neutral { color: var(--muted); }
+    #decisionTitle { margin: 0 0 7px; font-size: 21px; letter-spacing: -.025em; }
+    #decisionText { min-height: 42px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+
+    .network {
+      position: relative;
+      min-height: 335px;
+      margin: 10px 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background:
+        linear-gradient(rgba(35, 55, 81, .22) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(35, 55, 81, .22) 1px, transparent 1px),
+        #091625;
+      background-size: 28px 28px;
+    }
+
+    #networkSvg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+
+    .rank {
+      position: absolute;
+      z-index: 3;
+      display: grid;
+      place-items: center;
+      width: 58px;
+      height: 58px;
+      margin: -29px;
+      border: 2px solid #345071;
+      border-radius: 50%;
+      color: #caddf1;
+      background: #10243b;
+      box-shadow: 0 0 0 5px rgba(7, 17, 31, .78);
+      font-size: 12px;
+      font-weight: 900;
+      transition: .25s ease;
+    }
+
+    .rank small { display: block; color: #7189a5; font-size: 8px; font-weight: 700; }
+    .rank.used { border-color: var(--violet); color: #efe9ff; }
+    .rank.candidate { border-color: var(--cyan); transform: scale(1.08); }
+    .rank.conflict { border-color: var(--red); background: #3b1721; animation: shake .34s ease; }
+    .rank.free { border-color: var(--green); background: #123127; }
+
+    @keyframes shake {
+      25% { transform: translateX(-3px); }
+      75% { transform: translateX(3px); }
+    }
+
+    .algo {
+      margin: 0 16px 16px;
+      padding: 11px 13px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: #9fb2c9;
+      background: #0a1728;
+      font: 11px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .algo .hot { color: var(--cyan); }
+
+    .batch-list { display: grid; gap: 11px; }
+
+    .batch-card {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #101f33;
+      transition: transform .2s ease, border-color .2s ease;
+    }
+
+    .batch-card.testing { transform: translateY(-2px); border-color: var(--cyan); }
+    .batch-card.reject { border-color: var(--red); animation: flashRed .42s ease; }
+    .batch-card.accept { border-color: var(--green); animation: flashGreen .42s ease; }
+
+    @keyframes flashRed { 50% { background: rgba(255, 113, 133, .14); } }
+    @keyframes flashGreen { 50% { background: rgba(113, 231, 165, .14); } }
+
+    .batch-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .batch-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--batch-color); box-shadow: 0 0 12px var(--batch-color); }
+    .batch-content { display: grid; gap: 7px; padding: 10px 12px; }
+
+    .batch-flow {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 9px;
+      border-radius: 9px;
+      background: rgba(255, 255, 255, .035);
+      font-size: 12px;
+    }
+
+    .batch-flow span:last-child { color: var(--muted); font-size: 10px; }
+    .endpoint-row { display: flex; flex-wrap: wrap; gap: 5px; padding-top: 3px; }
+    .endpoint-chip { padding: 3px 6px; border-radius: 6px; color: #b8cae0; background: #1a2d46; font-size: 9px; font-weight: 800; }
+
+    .empty-state {
+      padding: 45px 12px;
+      color: #647993;
+      font-size: 12px;
+      line-height: 1.55;
+      text-align: center;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend i { width: 9px; height: 9px; border-radius: 50%; }
+
+    .takeaway {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .takeaway article {
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(13, 26, 43, .7);
+    }
+
+    .takeaway strong { display: block; margin-bottom: 5px; color: var(--cyan); font-size: 12px; }
+    .takeaway p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+    @media (max-width: 1050px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .rule-badge { max-width: none; }
+      .workspace { grid-template-columns: 1fr 1.25fr; }
+      .batches { grid-column: 1 / -1; }
+      .batch-list { grid-template-columns: repeat(3, 1fr); }
+    }
+
+    @media (max-width: 720px) {
+      .page { width: min(100% - 18px, 1500px); padding-top: 18px; }
+      .controls { grid-template-columns: repeat(3, 1fr); }
+      .timeline-wrap { grid-column: 1 / -1; grid-row: 2; }
+      .speed { grid-column: 1 / -1; justify-content: center; }
+      .workspace { grid-template-columns: 1fr; }
+      .batches { grid-column: auto; }
+      .batch-list { grid-template-columns: 1fr; }
+      .takeaway { grid-template-columns: 1fr; }
+      .phase { padding-inline: 5px; font-size: 9px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div>
+        <p class="eyebrow">EPLB expert migration</p>
+        <h1>Contention-Aware Migration Batching</h1>
+        <p class="subtitle">
+          A greedy scheduler groups expert transfers into conflict-free batches,
+          keeping independent rank pairs concurrent while preventing any rank from
+          talking to more than one peer at a time.
+        </p>
+      </div>
+      <div class="rule-badge">
+        <strong>Invariant</strong><br>
+        Inside one batch, every rank appears in at most one flow.
+        Transfer direction does not change endpoint contention.
+      </div>
+    </header>
+
+    <section class="controls" aria-label="Animation controls">
+      <button class="btn" id="resetBtn" type="button">Reset</button>
+      <button class="btn" id="backBtn" type="button">Back</button>
+      <button class="btn primary" id="nextBtn" type="button">Next</button>
+      <div class="timeline-wrap">
+        <input id="timeline" type="range" min="0" value="0" step="1" aria-label="Animation timeline">
+        <span id="counter">1 / 1</span>
+      </div>
+      <div class="speed">
+        <button class="btn" id="autoBtn" type="button">Auto</button>
+        <label for="speed">Speed</label>
+        <input id="speed" type="range" min="450" max="1800" value="1050" step="150">
+      </div>
+    </section>
+
+    <nav class="phase-strip" aria-label="Algorithm phases">
+      <div class="phase" data-phase="discover">1. Build flows</div>
+      <div class="phase" data-phase="scan">2. Scan batches</div>
+      <div class="phase" data-phase="place">3. Place flow</div>
+      <div class="phase" data-phase="execute">4. Execute</div>
+    </nav>
+
+    <section class="workspace">
+      <section class="panel flows" aria-labelledby="flowsHeading">
+        <div class="panel-head">
+          <h2 id="flowsHeading">Migration flows</h2>
+          <span>Click a flow to inspect it</span>
+        </div>
+        <div class="panel-body">
+          <div id="rawNote" class="raw-note"></div>
+          <div id="flowList" class="flow-list"></div>
+        </div>
+      </section>
+
+      <section class="panel engine" aria-labelledby="engineHeading">
+        <div class="panel-head">
+          <h2 id="engineHeading">Greedy placement</h2>
+          <span id="stepLabel">Ready</span>
+        </div>
+        <div class="decision" aria-live="polite">
+          <div class="decision-top">
+            <span class="decision-kicker" id="decisionKicker">Input</span>
+            <span class="decision-result neutral" id="decisionResult">Ready</span>
+          </div>
+          <h3 id="decisionTitle">Find the remote expert moves</h3>
+          <p id="decisionText"></p>
+        </div>
+        <div class="network" id="network">
+          <svg id="networkSvg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path>
+              </marker>
+            </defs>
+          </svg>
+        </div>
+        <pre class="algo"><span class="hot">for flow in flows:</span>
+  for batch in batches:
+    if endpoints(flow) ∩ used(batch) = ∅:
+      place flow; break
+  else: create a new batch</pre>
+      </section>
+
+      <section class="panel batches" aria-labelledby="batchesHeading">
+        <div class="panel-head">
+          <h2 id="batchesHeading">Conflict-free batches</h2>
+          <span id="batchCount">0 batches</span>
+        </div>
+        <div class="panel-body">
+          <div id="batchList" class="batch-list"></div>
+          <div class="legend">
+            <span><i style="background:var(--green)"></i> endpoints free</span>
+            <span><i style="background:var(--red)"></i> rank conflict</span>
+            <span><i style="background:var(--cyan)"></i> current flow</span>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="takeaway" aria-label="Key ideas">
+      <article>
+        <strong>Coalesce by directed pair</strong>
+        <p>Experts with the same source and destination become one migration flow.</p>
+      </article>
+      <article>
+        <strong>Preserve useful concurrency</strong>
+        <p>Disjoint rank pairs share a batch and transfer together.</p>
+      </article>
+      <article>
+        <strong>Execute batch boundaries</strong>
+        <p>Each batch is submitted separately so the communication backend preserves the schedule.</p>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+
+    const rawTransfers = [
+      { src: 0, dst: 3, expert: "E2" },
+      { src: 0, dst: 3, expert: "E7" },
+      { src: 1, dst: 4, expert: "E5" },
+      { src: 0, dst: 5, expert: "E9" },
+      { src: 2, dst: 3, expert: "E1" },
+      { src: 2, dst: 5, expert: "E4" },
+      { src: 3, dst: 4, expert: "E6" }
+    ];
+
+    const flows = [
+      { id: "A", src: 0, dst: 3, experts: ["E2", "E7"], merged: true },
+      { id: "B", src: 1, dst: 4, experts: ["E5"] },
+      { id: "C", src: 0, dst: 5, experts: ["E9"] },
+      { id: "D", src: 2, dst: 3, experts: ["E1"] },
+      { id: "E", src: 2, dst: 5, experts: ["E4"] },
+      { id: "F", src: 3, dst: 4, experts: ["E6"] }
+    ];
+
+    const rankPositions = {
+      0: [16, 18], 1: [16, 50], 2: [16, 82],
+      3: [84, 18], 4: [84, 50], 5: [84, 82]
+    };
+    const batchColors = ["var(--b0)", "var(--b1)", "var(--b2)", "var(--green)"];
+
+    function cloneBatches(batches) {
+      return batches.map(batch => batch.map(flow => flow.id));
+    }
+
+    function buildEvents() {
+      const events = [
+        {
+          phase: "discover", kind: "raw", batches: [],
+          title: "Find remote expert moves",
+          text: "Compare the old and new expert placement. Existing local copies do not need a transfer.",
+          result: "Input"
+        },
+        {
+          phase: "discover", kind: "coalesce", batches: [],
+          title: "Coalesce identical rank pairs",
+          text: "E2 and E7 both move from rank 0 to rank 3, so they become one flow. One endpoint decision now covers both experts.",
+          result: "6 flows"
+        }
+      ];
+      const batches = [];
+
+      for (const flow of flows) {
+        events.push({
+          phase: "scan", kind: "consider", flowId: flow.id,
+          batches: cloneBatches(batches),
+          title: `Consider flow ${flow.id}: rank ${flow.src} → rank ${flow.dst}`,
+          text: "Scan existing batches in order. A batch is valid only when both endpoints are unused.",
+          result: "Scanning"
+        });
+
+        let placed = false;
+        for (let index = 0; index < batches.length; index += 1) {
+          const used = new Set(batches[index].flatMap(item => [item.src, item.dst]));
+          const conflicts = [flow.src, flow.dst].filter(rank => used.has(rank));
+          events.push({
+            phase: "scan", kind: "test", flowId: flow.id, batchIndex: index,
+            conflicts, batches: cloneBatches(batches),
+            title: `Test batch ${index}`,
+            text: conflicts.length
+              ? `Reject: rank ${conflicts.join(" and rank ")} ${conflicts.length > 1 ? "are" : "is"} already active in this batch.`
+              : `Accept: ranks ${flow.src} and ${flow.dst} are both free. Independent pairs remain concurrent.`,
+            result: conflicts.length ? "Conflict" : "Fits"
+          });
+          if (!conflicts.length) {
+            batches[index].push(flow);
+            events.push({
+              phase: "place", kind: "place", flowId: flow.id, batchIndex: index,
+              batches: cloneBatches(batches),
+              title: `Place flow ${flow.id} in batch ${index}`,
+              text: `Batch ${index} now reserves ranks ${flow.src} and ${flow.dst} for this communication peer pair.`,
+              result: "Placed"
+            });
+            placed = true;
+            break;
+          }
+        }
+
+        if (!placed) {
+          batches.push([flow]);
+          const index = batches.length - 1;
+          events.push({
+            phase: "place", kind: "new", flowId: flow.id, batchIndex: index,
+            batches: cloneBatches(batches),
+            title: `Create batch ${index}`,
+            text: `No existing batch can accept both endpoints, so flow ${flow.id} starts a new conflict-free batch.`,
+            result: "New batch"
+          });
+        }
+      }
+
+      events.push({
+        phase: "execute", kind: "done", batches: cloneBatches(batches),
+        title: "Execute batches in order",
+        text: "Within a batch, disjoint pairs transfer concurrently. Each batch gets its own communicator.execute() call, preserving the boundaries.",
+        result: `${batches.length} batches`
+      });
+      return events;
+    }
+
+    const events = buildEvents();
+    let step = 0;
+    let timer = null;
+
+    const elements = {
+      reset: document.querySelector("#resetBtn"),
+      back: document.querySelector("#backBtn"),
+      next: document.querySelector("#nextBtn"),
+      auto: document.querySelector("#autoBtn"),
+      speed: document.querySelector("#speed"),
+      timeline: document.querySelector("#timeline"),
+      counter: document.querySelector("#counter"),
+      phases: [...document.querySelectorAll(".phase")],
+      flowList: document.querySelector("#flowList"),
+      rawNote: document.querySelector("#rawNote"),
+      stepLabel: document.querySelector("#stepLabel"),
+      kicker: document.querySelector("#decisionKicker"),
+      result: document.querySelector("#decisionResult"),
+      title: document.querySelector("#decisionTitle"),
+      text: document.querySelector("#decisionText"),
+      network: document.querySelector("#network"),
+      svg: document.querySelector("#networkSvg"),
+      batchList: document.querySelector("#batchList"),
+      batchCount: document.querySelector("#batchCount")
+    };
+
+    elements.timeline.max = String(events.length - 1);
+
+    function flowById(id) { return flows.find(flow => flow.id === id); }
+
+    function assignedFlowIds(batches) {
+      return new Set(batches.flat());
+    }
+
+    function jumpToFlow(id) {
+      const index = events.findIndex(event => event.kind === "consider" && event.flowId === id);
+      if (index >= 0) setStep(index);
+    }
+
+    function renderFlows(event) {
+      const assigned = assignedFlowIds(event.batches);
+      const showRaw = event.kind === "raw";
+      elements.rawNote.innerHTML = showRaw
+        ? `<strong>7 expert moves</strong> are discovered. Two share the same directed pair.`
+        : `<strong>6 rank-pair flows.</strong> The 0 → 3 flow carries E2 and E7 together.`;
+
+      const items = showRaw
+        ? rawTransfers.map((item, index) => ({
+            id: String(index + 1), src: item.src, dst: item.dst,
+            experts: [item.expert], raw: true,
+            merged: index < 2
+          }))
+        : flows;
+
+      elements.flowList.innerHTML = items.map(flow => {
+        const isCurrent = !flow.raw && event.flowId === flow.id;
+        const isPlaced = !flow.raw && assigned.has(flow.id);
+        const classes = ["flow-card", isCurrent ? "current" : "", isPlaced ? "placed" : "", flow.merged ? "merged" : ""].join(" ");
+        const state = flow.raw ? (flow.merged ? "same pair" : "raw move") : (isPlaced ? "scheduled" : isCurrent ? "current" : "pending");
+        return `
+          <button class="${classes}" type="button" data-flow="${flow.raw ? "" : flow.id}" ${flow.raw ? "disabled" : ""}>
+            <span class="flow-id">${flow.raw ? flow.experts[0].slice(1) : flow.id}</span>
+            <span>
+              <span class="flow-route">Rank ${flow.src} → Rank ${flow.dst}</span>
+              <span class="flow-experts">${flow.experts.join(" + ")}${flow.merged && !flow.raw ? " · coalesced" : ""}</span>
+            </span>
+            <span class="flow-state">${state}</span>
+          </button>`;
+      }).join("");
+
+      elements.flowList.querySelectorAll("[data-flow]").forEach(button => {
+        if (button.dataset.flow) button.addEventListener("click", () => jumpToFlow(button.dataset.flow));
+      });
+    }
+
+    function endpointsForBatch(batch) {
+      return [...new Set(batch.flatMap(id => {
+        const flow = flowById(id);
+        return [flow.src, flow.dst];
+      }))].sort((a, b) => a - b);
+    }
+
+    function renderBatches(event) {
+      elements.batchCount.textContent = `${event.batches.length} ${event.batches.length === 1 ? "batch" : "batches"}`;
+      if (!event.batches.length) {
+        elements.batchList.innerHTML = `<div class="empty-state">Batches appear here as flows are placed.<br>Use Next or Auto to run the scheduler.</div>`;
+        return;
+      }
+      elements.batchList.innerHTML = event.batches.map((batch, index) => {
+        const isTesting = event.kind === "test" && event.batchIndex === index;
+        const stateClass = isTesting ? (event.conflicts.length ? "reject" : "accept") : "";
+        const endpoints = endpointsForBatch(batch);
+        return `
+          <article class="batch-card ${isTesting ? "testing" : ""} ${stateClass}" style="--batch-color:${batchColors[index % batchColors.length]}">
+            <div class="batch-title">
+              <span>Batch ${index}</span>
+              <span class="batch-dot"></span>
+            </div>
+            <div class="batch-content">
+              ${batch.map(id => {
+                const flow = flowById(id);
+                return `<div class="batch-flow"><strong>${id}: ${flow.src} → ${flow.dst}</strong><span>${flow.experts.join(", ")}</span></div>`;
+              }).join("")}
+              <div class="endpoint-row">${endpoints.map(rank => `<span class="endpoint-chip">R${rank}</span>`).join("")}</div>
+            </div>
+          </article>`;
+      }).join("");
+    }
+
+    function lineMarkup(flow, color, width, opacity, dashed = false) {
+      const [x1, y1] = rankPositions[flow.src];
+      const [x2, y2] = rankPositions[flow.dst];
+      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+        stroke="${color}" stroke-width="${width}" opacity="${opacity}"
+        ${dashed ? 'stroke-dasharray="3 2"' : ""} vector-effect="non-scaling-stroke"
+        marker-end="url(#arrow)" />`;
+    }
+
+    function renderNetwork(event) {
+      elements.network.querySelectorAll(".rank").forEach(node => node.remove());
+      const used = new Set();
+      event.batches.forEach(batch => batch.forEach(id => {
+        const flow = flowById(id);
+        used.add(flow.src); used.add(flow.dst);
+      }));
+      const current = event.flowId ? flowById(event.flowId) : null;
+      const conflicts = new Set(event.conflicts || []);
+      const isFit = event.kind === "test" && !conflicts.size;
+
+      Object.entries(rankPositions).forEach(([rankText, position]) => {
+        const rank = Number(rankText);
+        const node = document.createElement("div");
+        const classes = ["rank"];
+        if (used.has(rank)) classes.push("used");
+        if (current && (current.src === rank || current.dst === rank)) classes.push("candidate");
+        if (conflicts.has(rank)) classes.push("conflict");
+        if (isFit && current && (current.src === rank || current.dst === rank)) classes.push("free");
+        node.className = classes.join(" ");
+        node.style.left = `${position[0]}%`;
+        node.style.top = `${position[1]}%`;
+        node.innerHTML = `<span>R${rank}<small>rank</small></span>`;
+        elements.network.appendChild(node);
+      });
+
+      let lines = elements.svg.querySelector("defs").outerHTML;
+      event.batches.forEach((batch, batchIndex) => batch.forEach(id => {
+        lines += lineMarkup(flowById(id), batchColors[batchIndex % batchColors.length], 2.2, .72);
+      }));
+      if (current && !assignedFlowIds(event.batches).has(current.id)) {
+        lines += lineMarkup(current, "var(--cyan)", 3.2, 1, true);
+      }
+      elements.svg.innerHTML = lines;
+    }
+
+    function renderDecision(event) {
+      const labels = { discover: "Build flows", scan: "Scan batches", place: "Place flow", execute: "Execute" };
+      elements.stepLabel.textContent = labels[event.phase];
+      elements.kicker.textContent = labels[event.phase];
+      elements.title.textContent = event.title;
+      elements.text.textContent = event.text;
+      elements.result.textContent = event.result;
+      elements.result.className = `decision-result ${event.kind === "test" ? (event.conflicts.length ? "conflict" : "fit") : "neutral"}`;
+      elements.phases.forEach(phase => phase.classList.toggle("active", phase.dataset.phase === event.phase));
+    }
+
+    function render() {
+      const event = events[step];
+      renderFlows(event);
+      renderBatches(event);
+      renderNetwork(event);
+      renderDecision(event);
+      elements.timeline.value = String(step);
+      elements.counter.textContent = `${step + 1} / ${events.length}`;
+      elements.back.disabled = step === 0;
+      elements.next.disabled = step === events.length - 1;
+      if (step === events.length - 1) stopAuto();
+    }
+
+    function setStep(nextStep) {
+      step = Math.max(0, Math.min(events.length - 1, nextStep));
+      render();
+    }
+
+    function stopAuto() {
+      if (timer) clearInterval(timer);
+      timer = null;
+      elements.auto.textContent = "Auto";
+      elements.auto.classList.remove("playing");
+    }
+
+    function toggleAuto() {
+      if (timer) { stopAuto(); return; }
+      if (step === events.length - 1) setStep(0);
+      const delay = 2250 - Number(elements.speed.value);
+      timer = setInterval(() => {
+        if (step >= events.length - 1) stopAuto();
+        else setStep(step + 1);
+      }, delay);
+      elements.auto.textContent = "Pause";
+      elements.auto.classList.add("playing");
+    }
+
+    elements.reset.addEventListener("click", () => { stopAuto(); setStep(0); });
+    elements.back.addEventListener("click", () => { stopAuto(); setStep(step - 1); });
+    elements.next.addEventListener("click", () => { stopAuto(); setStep(step + 1); });
+    elements.auto.addEventListener("click", toggleAuto);
+    elements.timeline.addEventListener("input", event => { stopAuto(); setStep(Number(event.target.value)); });
+    elements.speed.addEventListener("change", () => { if (timer) { stopAuto(); toggleAuto(); } });
+
+    document.addEventListener("keydown", event => {
+      if (event.key === "ArrowRight") { stopAuto(); setStep(step + 1); }
+      if (event.key === "ArrowLeft") { stopAuto(); setStep(step - 1); }
+      if (event.code === "Space" && event.target.tagName !== "BUTTON") { event.preventDefault(); toggleAuto(); }
+    });
+
+    render();
+  </script>
+</body>
+</html>
