@@ -3,899 +3,501 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>EPLB Migration Batching</title>
+  <title>Migration Batching: Greedy and ILP</title>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #07111f;
-      --panel: #0d1a2b;
-      --panel-2: #122238;
-      --line: #233751;
-      --text: #eef6ff;
-      --muted: #91a4bd;
-      --cyan: #38d9f5;
-      --green: #71e7a5;
-      --amber: #ffbf69;
-      --red: #ff7185;
-      --violet: #a78bfa;
-      --b0: #38d9f5;
-      --b1: #a78bfa;
-      --b2: #ffbf69;
+      --bg: #08111d;
+      --panel: #101c2c;
+      --panel-2: #15243a;
+      --line: #2a3d58;
+      --text: #f3f7fc;
+      --muted: #90a1b8;
+      --cyan: #35d1ed;
+      --green: #62e6a0;
+      --amber: #ffbd66;
+      --red: #ff7083;
+      --violet: #a98bff;
       --radius: 18px;
     }
 
     * { box-sizing: border-box; }
-
     body {
       margin: 0;
       min-height: 100vh;
       color: var(--text);
       background:
-        radial-gradient(circle at 15% 0%, rgba(56, 217, 245, .10), transparent 30%),
-        radial-gradient(circle at 90% 10%, rgba(167, 139, 250, .10), transparent 30%),
+        radial-gradient(circle at 10% 0%, rgba(53, 209, 237, .10), transparent 28%),
+        radial-gradient(circle at 90% 10%, rgba(169, 139, 255, .10), transparent 30%),
         var(--bg);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
         "Segoe UI", sans-serif;
     }
 
-    button, input { font: inherit; }
+    button { font: inherit; }
+    .page { width: min(1180px, calc(100% - 28px)); margin: auto; padding: 28px 0; }
+    header { margin-bottom: 18px; }
+    .eyebrow { margin: 0 0 7px; color: var(--cyan); font-size: 11px; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(30px, 4.5vw, 50px); line-height: 1.05; letter-spacing: -.04em; }
+    .subtitle { margin: 9px 0 0; color: var(--muted); font-size: 14px; }
 
-    .page {
-      width: min(1500px, calc(100% - 32px));
-      margin: 0 auto;
-      padding: 30px 0 34px;
+    .mode-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: rgba(16, 28, 44, .85);
     }
 
-    header {
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 24px;
-      margin-bottom: 20px;
-    }
-
-    .eyebrow {
-      margin: 0 0 8px;
-      color: var(--cyan);
-      font-size: 12px;
+    .mode-tab {
+      min-height: 48px;
+      border: 1px solid transparent;
+      border-radius: 11px;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
       font-weight: 800;
-      letter-spacing: .16em;
+      transition: .2s ease;
+    }
+    .mode-tab:hover { color: var(--text); background: rgba(255, 255, 255, .035); }
+    .mode-tab.active { border-color: rgba(53, 209, 237, .5); color: var(--cyan); background: rgba(53, 209, 237, .09); }
+
+    .stage {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(19, 35, 56, .96), rgba(11, 23, 38, .98));
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .24);
+    }
+
+    .stage-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 78px;
+      padding: 15px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .stage-head h2 { margin: 0 0 5px; font-size: 21px; letter-spacing: -.025em; }
+    .stage-head p { margin: 0; color: var(--muted); font-size: 12px; }
+    .rule {
+      flex: 0 0 auto;
+      padding: 9px 12px;
+      border: 1px solid rgba(98, 230, 160, .35);
+      border-radius: 10px;
+      color: #caffdf;
+      background: rgba(98, 230, 160, .07);
+      font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .steps { display: flex; gap: 7px; padding: 12px 20px 0; overflow-x: auto; }
+    .step-dot {
+      flex: 1 0 auto;
+      min-width: 92px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: #70839d;
+      background: #0c1828;
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .04em;
       text-transform: uppercase;
     }
+    .step-dot.active { border-color: var(--cyan); color: var(--cyan); background: rgba(53, 209, 237, .08); }
+    .step-dot.done { color: #b3c3d7; border-color: #3a516f; }
 
-    h1 {
-      margin: 0;
-      font-size: clamp(30px, 4vw, 54px);
-      line-height: 1.02;
-      letter-spacing: -.045em;
-    }
-
-    .subtitle {
-      max-width: 710px;
-      margin: 12px 0 0;
-      color: var(--muted);
-      font-size: 16px;
-      line-height: 1.55;
-    }
-
-    .rule-badge {
-      flex: 0 0 auto;
-      max-width: 310px;
-      padding: 13px 16px;
-      border: 1px solid rgba(113, 231, 165, .35);
-      border-radius: 14px;
-      color: #caffdf;
-      background: rgba(113, 231, 165, .08);
-      font-size: 13px;
-      line-height: 1.45;
-    }
-
-    .rule-badge strong { color: var(--green); }
+    #canvas { padding: 18px 20px; animation: fade .22s ease; }
+    @keyframes fade { from { opacity: .35; transform: translateY(3px); } }
 
     .controls {
       display: grid;
-      grid-template-columns: auto auto auto 1fr auto;
+      grid-template-columns: auto auto auto auto 1fr;
       align-items: center;
-      gap: 10px;
-      margin-bottom: 14px;
-      padding: 12px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: rgba(13, 26, 43, .86);
-      backdrop-filter: blur(12px);
+      gap: 8px;
+      padding: 12px 20px;
+      border-top: 1px solid var(--line);
+      background: #0b1727;
     }
-
     .btn {
-      min-height: 40px;
-      padding: 0 16px;
+      min-height: 38px;
+      padding: 0 15px;
       border: 1px solid var(--line);
-      border-radius: 11px;
+      border-radius: 10px;
       color: var(--text);
       background: var(--panel-2);
       cursor: pointer;
-      transition: transform .16s ease, border-color .16s ease, background .16s ease;
     }
+    .btn:hover:not(:disabled) { border-color: #476585; transform: translateY(-1px); }
+    .btn:disabled { opacity: .32; cursor: default; }
+    .btn.primary { border-color: #248ea5; background: #0c4f61; }
+    .btn.playing { border-color: #a97836; background: #533915; }
+    .counter { color: var(--muted); font-size: 11px; text-align: right; }
 
-    .btn:hover:not(:disabled) {
-      transform: translateY(-1px);
-      border-color: #426185;
-      background: #172b46;
-    }
+    .two-col { display: grid; grid-template-columns: .8fr 1.2fr; gap: 14px; min-height: 465px; }
+    .card { border: 1px solid var(--line); border-radius: 14px; background: rgba(8, 20, 34, .66); }
+    .card-title { display: flex; align-items: center; justify-content: space-between; min-height: 45px; padding: 0 14px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 900; }
+    .card-title span { color: var(--muted); font-size: 10px; font-weight: 600; }
+    .card-body { padding: 13px; }
 
-    .btn:disabled { opacity: .35; cursor: not-allowed; }
-    .btn.primary { border-color: #248ca4; background: #0c4e61; }
-    .btn.playing { border-color: #be883c; background: #5f4219; }
-
-    .timeline-wrap {
+    .flow-list { display: grid; gap: 8px; }
+    .flow {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 28px 1fr auto;
       align-items: center;
-      gap: 12px;
-      min-width: 180px;
-      padding: 0 8px;
-    }
-
-    #timeline { width: 100%; accent-color: var(--cyan); cursor: pointer; }
-    #counter { min-width: 58px; color: var(--muted); font-size: 12px; text-align: right; }
-
-    .speed {
-      display: flex;
-      align-items: center;
-      gap: 8px;
+      gap: 9px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
       color: var(--muted);
-      font-size: 12px;
+      background: #112137;
+      transition: .22s ease;
     }
+    .flow b { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 8px; color: #07111d; background: var(--cyan); font-size: 11px; }
+    .flow strong { color: var(--text); font-size: 13px; }
+    .flow small { font-size: 9px; text-transform: uppercase; }
+    .flow.current { border-color: var(--cyan); transform: translateX(3px); background: rgba(53, 209, 237, .08); }
+    .flow.done { opacity: .42; }
 
-    #speed {
-      width: 92px;
-      accent-color: var(--amber);
-      cursor: pointer;
-    }
-
-    .phase-strip {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 8px;
-      margin-bottom: 14px;
-    }
-
-    .phase {
-      padding: 10px 12px;
+    .batch-board { display: grid; gap: 11px; }
+    .batch {
+      min-height: 92px;
+      padding: 12px;
       border: 1px solid var(--line);
       border-radius: 12px;
-      color: #70859f;
-      background: rgba(13, 26, 43, .55);
-      font-size: 12px;
-      font-weight: 800;
-      letter-spacing: .08em;
-      text-align: center;
-      text-transform: uppercase;
-      transition: .25s ease;
+      background: #0d1b2d;
+      transition: .22s ease;
     }
+    .batch.testing { border-color: var(--cyan); }
+    .batch.conflict { border-color: var(--red); background: rgba(255, 112, 131, .07); }
+    .batch.fit { border-color: var(--green); background: rgba(98, 230, 160, .06); }
+    .batch-head { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 11px; font-weight: 900; }
+    .batch-head span:last-child { color: var(--muted); font-weight: 600; }
+    .batch-flows { display: flex; flex-wrap: wrap; gap: 7px; }
+    .flow-pill { padding: 7px 9px; border-radius: 8px; color: #dce9f7; background: #1a2d46; font-size: 11px; font-weight: 800; }
+    .flow-pill.new { color: #06131d; background: var(--green); animation: pop .25s ease; }
+    @keyframes pop { 50% { transform: scale(1.06); } }
+    .empty { color: #62758f; font-size: 11px; }
 
-    .phase.active {
-      border-color: rgba(56, 217, 245, .65);
-      color: var(--cyan);
-      background: rgba(56, 217, 245, .08);
-      box-shadow: inset 0 -2px 0 var(--cyan);
-    }
-
-    .workspace {
-      display: grid;
-      grid-template-columns: minmax(260px, .82fr) minmax(420px, 1.28fr) minmax(300px, .95fr);
-      gap: 14px;
-      min-height: 615px;
-    }
-
-    .panel {
-      overflow: hidden;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: linear-gradient(180deg, rgba(18, 34, 56, .94), rgba(10, 22, 38, .96));
-      box-shadow: 0 18px 50px rgba(0, 0, 0, .18);
-    }
-
-    .panel-head {
+    .message {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      min-height: 58px;
-      padding: 0 18px;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .panel-head h2 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
-    .panel-head span { color: var(--muted); font-size: 11px; }
-    .panel-body { padding: 16px; }
-
-    .flow-list { display: grid; gap: 9px; }
-
-    .flow-card {
-      position: relative;
-      display: grid;
-      grid-template-columns: 32px 1fr auto;
-      align-items: center;
-      gap: 10px;
-      width: 100%;
-      padding: 11px 12px;
+      gap: 12px;
+      margin-top: 12px;
+      padding: 12px 14px;
       border: 1px solid var(--line);
-      border-radius: 12px;
-      color: var(--text);
-      background: #101f33;
-      text-align: left;
-      cursor: pointer;
-      transition: opacity .2s ease, transform .2s ease, border-color .2s ease;
-    }
-
-    .flow-card:hover { transform: translateX(3px); border-color: #426185; }
-    .flow-card.current { border-color: var(--cyan); background: rgba(56, 217, 245, .09); }
-    .flow-card.placed { opacity: .48; }
-    .flow-card.merged { border-color: rgba(113, 231, 165, .55); }
-
-    .flow-id {
-      display: grid;
-      place-items: center;
-      width: 30px;
-      height: 30px;
-      border-radius: 9px;
-      color: #06111d;
-      background: var(--cyan);
-      font-size: 12px;
-      font-weight: 900;
-    }
-
-    .flow-route { font-size: 14px; font-weight: 800; }
-    .flow-experts { margin-top: 4px; color: var(--muted); font-size: 11px; }
-    .flow-state { color: var(--muted); font-size: 10px; text-transform: uppercase; }
-
-    .raw-note {
-      margin-bottom: 12px;
-      padding: 10px 12px;
-      border: 1px dashed rgba(113, 231, 165, .45);
       border-radius: 11px;
-      color: #bcefd1;
-      background: rgba(113, 231, 165, .06);
-      font-size: 12px;
-      line-height: 1.45;
-    }
-
-    .engine { display: grid; grid-template-rows: auto 1fr auto; }
-
-    .decision {
-      margin: 16px 16px 0;
-      padding: 15px 16px;
-      border: 1px solid #2b4465;
-      border-radius: 14px;
-      background: #0a1728;
-    }
-
-    .decision-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 8px;
-    }
-
-    .decision-kicker {
-      color: var(--cyan);
-      font-size: 11px;
-      font-weight: 900;
-      letter-spacing: .1em;
-      text-transform: uppercase;
-    }
-
-    .decision-result {
-      font-size: 11px;
-      font-weight: 900;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-    }
-
-    .decision-result.fit { color: var(--green); }
-    .decision-result.conflict { color: var(--red); }
-    .decision-result.neutral { color: var(--muted); }
-    #decisionTitle { margin: 0 0 7px; font-size: 21px; letter-spacing: -.025em; }
-    #decisionText { min-height: 42px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
-
-    .network {
-      position: relative;
-      min-height: 335px;
-      margin: 10px 16px;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background:
-        linear-gradient(rgba(35, 55, 81, .22) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(35, 55, 81, .22) 1px, transparent 1px),
-        #091625;
-      background-size: 28px 28px;
-    }
-
-    #networkSvg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-
-    .rank {
-      position: absolute;
-      z-index: 3;
-      display: grid;
-      place-items: center;
-      width: 58px;
-      height: 58px;
-      margin: -29px;
-      border: 2px solid #345071;
-      border-radius: 50%;
-      color: #caddf1;
-      background: #10243b;
-      box-shadow: 0 0 0 5px rgba(7, 17, 31, .78);
-      font-size: 12px;
-      font-weight: 900;
-      transition: .25s ease;
-    }
-
-    .rank small { display: block; color: #7189a5; font-size: 8px; font-weight: 700; }
-    .rank.used { border-color: var(--violet); color: #efe9ff; }
-    .rank.candidate { border-color: var(--cyan); transform: scale(1.08); }
-    .rank.conflict { border-color: var(--red); background: #3b1721; animation: shake .34s ease; }
-    .rank.free { border-color: var(--green); background: #123127; }
-
-    @keyframes shake {
-      25% { transform: translateX(-3px); }
-      75% { transform: translateX(3px); }
-    }
-
-    .algo {
-      margin: 0 16px 16px;
-      padding: 11px 13px;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      color: #9fb2c9;
-      background: #0a1728;
-      font: 11px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
-    }
-
-    .algo .hot { color: var(--cyan); }
-
-    .batch-list { display: grid; gap: 11px; }
-
-    .batch-card {
-      overflow: hidden;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: #101f33;
-      transition: transform .2s ease, border-color .2s ease;
-    }
-
-    .batch-card.testing { transform: translateY(-2px); border-color: var(--cyan); }
-    .batch-card.reject { border-color: var(--red); animation: flashRed .42s ease; }
-    .batch-card.accept { border-color: var(--green); animation: flashGreen .42s ease; }
-
-    @keyframes flashRed { 50% { background: rgba(255, 113, 133, .14); } }
-    @keyframes flashGreen { 50% { background: rgba(113, 231, 165, .14); } }
-
-    .batch-title {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--line);
-      font-size: 12px;
-      font-weight: 900;
-    }
-
-    .batch-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--batch-color); box-shadow: 0 0 12px var(--batch-color); }
-    .batch-content { display: grid; gap: 7px; padding: 10px 12px; }
-
-    .batch-flow {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 7px 9px;
-      border-radius: 9px;
-      background: rgba(255, 255, 255, .035);
-      font-size: 12px;
-    }
-
-    .batch-flow span:last-child { color: var(--muted); font-size: 10px; }
-    .endpoint-row { display: flex; flex-wrap: wrap; gap: 5px; padding-top: 3px; }
-    .endpoint-chip { padding: 3px 6px; border-radius: 6px; color: #b8cae0; background: #1a2d46; font-size: 9px; font-weight: 800; }
-
-    .empty-state {
-      padding: 45px 12px;
-      color: #647993;
-      font-size: 12px;
-      line-height: 1.55;
-      text-align: center;
-    }
-
-    .legend {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin-top: 14px;
       color: var(--muted);
-      font-size: 10px;
+      background: #0b1829;
+      font-size: 12px;
     }
+    .message strong { color: var(--text); }
+    .status { flex: 0 0 auto; color: var(--cyan); font-size: 10px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+    .status.red { color: var(--red); }
+    .status.green { color: var(--green); }
 
-    .legend span { display: inline-flex; align-items: center; gap: 6px; }
-    .legend i { width: 9px; height: 9px; border-radius: 50%; }
+    .topology { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+    .server { padding: 10px; border: 1px solid #334b6a; border-radius: 11px; background: #102238; text-align: center; }
+    .server b { display: block; margin-bottom: 8px; color: var(--muted); font-size: 9px; text-transform: uppercase; }
+    .gpus { display: flex; justify-content: center; gap: 5px; }
+    .gpu { padding: 5px 7px; border-radius: 7px; color: #07111d; background: var(--cyan); font-size: 10px; font-weight: 900; }
+    .network-line { margin: 0 8% 16px; border-top: 3px solid var(--amber); color: var(--amber); font-size: 9px; text-align: center; }
+    .network-line span { position: relative; top: -8px; padding: 0 8px; background: #0d1b2d; }
 
-    .takeaway {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
-      margin-top: 14px;
-    }
+    .params, .migration-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { padding: 6px 8px; border: 1px solid #334b6a; border-radius: 8px; color: #b8c8db; background: #12243a; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .migration-grid { margin-top: 10px; }
+    .migration { padding: 6px 8px; border-radius: 8px; color: #cfe1f4; background: #182c45; font-size: 10px; font-weight: 800; }
 
-    .takeaway article {
-      padding: 13px 15px;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: rgba(13, 26, 43, .7);
-    }
+    .formula-box { display: grid; place-items: center; min-height: 105px; margin-bottom: 12px; padding: 14px; border: 1px solid #38506d; border-radius: 13px; color: #eaf6ff; background: #0b192a; text-align: center; }
+    .formula { color: var(--cyan); font: clamp(15px, 2.2vw, 22px)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .formula-note { margin-top: 7px; color: var(--muted); font-size: 11px; }
 
-    .takeaway strong { display: block; margin-bottom: 5px; color: var(--cyan); font-size: 12px; }
-    .takeaway p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .var-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+    .var-card { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #102138; }
+    .var-card code { display: block; margin-bottom: 7px; color: var(--cyan); font-size: 19px; }
+    .var-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 
-    @media (max-width: 1050px) {
-      header { align-items: flex-start; flex-direction: column; }
-      .rule-badge { max-width: none; }
-      .workspace { grid-template-columns: 1fr 1.25fr; }
-      .batches { grid-column: 1 / -1; }
-      .batch-list { grid-template-columns: repeat(3, 1fr); }
-    }
+    .matrix { display: grid; grid-template-columns: 48px repeat(4, 1fr); gap: 4px; }
+    .cell { display: grid; place-items: center; min-height: 29px; border-radius: 6px; color: #6f839e; background: #102036; font-size: 9px; font-weight: 800; }
+    .cell.head { color: #b8c9dc; background: #182c45; }
+    .cell.on { color: #07111d; background: var(--green); }
 
-    @media (max-width: 720px) {
-      .page { width: min(100% - 18px, 1500px); padding-top: 18px; }
-      .controls { grid-template-columns: repeat(3, 1fr); }
-      .timeline-wrap { grid-column: 1 / -1; grid-row: 2; }
-      .speed { grid-column: 1 / -1; justify-content: center; }
-      .workspace { grid-template-columns: 1fr; }
-      .batches { grid-column: auto; }
-      .batch-list { grid-template-columns: 1fr; }
-      .takeaway { grid-template-columns: 1fr; }
-      .phase { padding-inline: 5px; font-size: 9px; }
+    .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .result-card { padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: #102138; }
+    .result-card.optimal { border-color: rgba(98, 230, 160, .5); background: rgba(98, 230, 160, .06); }
+    .result-card h3 { margin: 0 0 12px; font-size: 13px; }
+    .metric { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid rgba(42, 61, 88, .7); color: var(--muted); font-size: 11px; }
+    .metric strong { color: var(--text); }
+    .bar { height: 8px; margin-top: 10px; overflow: hidden; border-radius: 5px; background: #223650; }
+    .bar i { display: block; height: 100%; background: var(--red); }
+    .optimal .bar i { background: var(--green); }
+
+    .batch-result { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 10px; }
+    .batch-result div { padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #102138; }
+    .batch-result b { display: block; margin-bottom: 5px; color: var(--cyan); font-size: 9px; }
+    .batch-result span { color: #c7d6e7; font-size: 9px; }
+
+    @media (max-width: 760px) {
+      .page { width: min(100% - 16px, 1180px); padding: 16px 0; }
+      .stage-head { align-items: flex-start; flex-direction: column; }
+      .rule { width: 100%; }
+      .two-col { grid-template-columns: 1fr; min-height: 0; }
+      .topology { grid-template-columns: 1fr 1fr; }
+      .var-grid { grid-template-columns: 1fr; }
+      .batch-result { grid-template-columns: 1fr 1fr; }
+      .steps { flex-wrap: wrap; }
+      .step-dot { flex: 1 0 calc(33.333% - 7px); min-width: 92px; }
+      .controls { grid-template-columns: repeat(4, auto) 1fr; padding-inline: 12px; }
+      #canvas, .steps { padding-inline: 12px; }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+      * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
     }
   </style>
 </head>
 <body>
   <main class="page">
     <header>
-      <div>
-        <p class="eyebrow">EPLB expert migration</p>
-        <h1>Contention-Aware Migration Batching</h1>
-        <p class="subtitle">
-          A greedy scheduler groups expert transfers into conflict-free batches,
-          keeping independent rank pairs concurrent while preventing any rank from
-          talking to more than one peer at a time.
-        </p>
-      </div>
-      <div class="rule-badge">
-        <strong>Invariant</strong><br>
-        Inside one batch, every rank appears in at most one flow.
-        Transfer direction does not change endpoint contention.
-      </div>
+      <p class="eyebrow">Interactive explainer</p>
+      <h1>Migration Batching</h1>
+      <p class="subtitle">One simple heuristic. One optimization model.</p>
     </header>
 
-    <section class="controls" aria-label="Animation controls">
-      <button class="btn" id="resetBtn" type="button">Reset</button>
-      <button class="btn" id="backBtn" type="button">Back</button>
-      <button class="btn primary" id="nextBtn" type="button">Next</button>
-      <div class="timeline-wrap">
-        <input id="timeline" type="range" min="0" value="0" step="1" aria-label="Animation timeline">
-        <span id="counter">1 / 1</span>
-      </div>
-      <div class="speed">
-        <button class="btn" id="autoBtn" type="button">Auto</button>
-        <label for="speed">Speed</label>
-        <input id="speed" type="range" min="450" max="1800" value="1050" step="150">
-      </div>
-    </section>
-
-    <nav class="phase-strip" aria-label="Algorithm phases">
-      <div class="phase" data-phase="discover">1. Build flows</div>
-      <div class="phase" data-phase="scan">2. Scan batches</div>
-      <div class="phase" data-phase="place">3. Place flow</div>
-      <div class="phase" data-phase="execute">4. Execute</div>
+    <nav class="mode-tabs" aria-label="Demo mode">
+      <button class="mode-tab active" data-mode="batching" type="button">1. Greedy batching</button>
+      <button class="mode-tab" data-mode="ilp" type="button">2. ILP model</button>
     </nav>
 
-    <section class="workspace">
-      <section class="panel flows" aria-labelledby="flowsHeading">
-        <div class="panel-head">
-          <h2 id="flowsHeading">Migration flows</h2>
-          <span>Click a flow to inspect it</span>
+    <section class="stage">
+      <div class="stage-head">
+        <div>
+          <h2 id="modeTitle"></h2>
+          <p id="modeSubtitle"></p>
         </div>
-        <div class="panel-body">
-          <div id="rawNote" class="raw-note"></div>
-          <div id="flowList" class="flow-list"></div>
-        </div>
-      </section>
-
-      <section class="panel engine" aria-labelledby="engineHeading">
-        <div class="panel-head">
-          <h2 id="engineHeading">Greedy placement</h2>
-          <span id="stepLabel">Ready</span>
-        </div>
-        <div class="decision" aria-live="polite">
-          <div class="decision-top">
-            <span class="decision-kicker" id="decisionKicker">Input</span>
-            <span class="decision-result neutral" id="decisionResult">Ready</span>
-          </div>
-          <h3 id="decisionTitle">Find the remote expert moves</h3>
-          <p id="decisionText"></p>
-        </div>
-        <div class="network" id="network">
-          <svg id="networkSvg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-            <defs>
-              <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path>
-              </marker>
-            </defs>
-          </svg>
-        </div>
-        <pre class="algo"><span class="hot">for flow in flows:</span>
-  for batch in batches:
-    if endpoints(flow) ∩ used(batch) = ∅:
-      place flow; break
-  else: create a new batch</pre>
-      </section>
-
-      <section class="panel batches" aria-labelledby="batchesHeading">
-        <div class="panel-head">
-          <h2 id="batchesHeading">Conflict-free batches</h2>
-          <span id="batchCount">0 batches</span>
-        </div>
-        <div class="panel-body">
-          <div id="batchList" class="batch-list"></div>
-          <div class="legend">
-            <span><i style="background:var(--green)"></i> endpoints free</span>
-            <span><i style="background:var(--red)"></i> rank conflict</span>
-            <span><i style="background:var(--cyan)"></i> current flow</span>
-          </div>
-        </div>
-      </section>
-    </section>
-
-    <section class="takeaway" aria-label="Key ideas">
-      <article>
-        <strong>Coalesce by directed pair</strong>
-        <p>Experts with the same source and destination become one migration flow.</p>
-      </article>
-      <article>
-        <strong>Preserve useful concurrency</strong>
-        <p>Disjoint rank pairs share a batch and transfer together.</p>
-      </article>
-      <article>
-        <strong>Execute batch boundaries</strong>
-        <p>Each batch is submitted separately so the communication backend preserves the schedule.</p>
-      </article>
+        <div class="rule" id="modeRule"></div>
+      </div>
+      <div class="steps" id="steps"></div>
+      <div id="canvas" aria-live="polite"></div>
+      <div class="controls">
+        <button class="btn" id="reset" type="button">Reset</button>
+        <button class="btn" id="prev" type="button">Prev</button>
+        <button class="btn primary" id="next" type="button">Next</button>
+        <button class="btn" id="play" type="button">Play</button>
+        <span class="counter" id="counter"></span>
+      </div>
     </section>
   </main>
 
   <script>
     "use strict";
 
-    const rawTransfers = [
-      { src: 0, dst: 3, expert: "E2" },
-      { src: 0, dst: 3, expert: "E7" },
-      { src: 1, dst: 4, expert: "E5" },
-      { src: 0, dst: 5, expert: "E9" },
-      { src: 2, dst: 3, expert: "E1" },
-      { src: 2, dst: 5, expert: "E4" },
-      { src: 3, dst: 4, expert: "E6" }
+    const greedyFlows = [
+      { id: "A", src: 0, dst: 2 },
+      { id: "B", src: 1, dst: 3 },
+      { id: "C", src: 0, dst: 3 },
+      { id: "D", src: 2, dst: 1 }
     ];
 
-    const flows = [
-      { id: "A", src: 0, dst: 3, experts: ["E2", "E7"], merged: true },
-      { id: "B", src: 1, dst: 4, experts: ["E5"] },
-      { id: "C", src: 0, dst: 5, experts: ["E9"] },
-      { id: "D", src: 2, dst: 3, experts: ["E1"] },
-      { id: "E", src: 2, dst: 5, experts: ["E4"] },
-      { id: "F", src: 3, dst: 4, experts: ["E6"] }
+    const batchingSteps = [
+      { label: "Input", current: null, batches: [], text: "Process migrations in order.", status: "Start" },
+      { label: "Flow A", current: "A", batches: [["A"]], text: "No batch exists. Create Batch 0.", status: "New batch" },
+      { label: "Flow B", current: "B", batches: [["A", "B"]], text: "R1 and R3 are free in Batch 0.", status: "Place in B0", fit: 0 },
+      { label: "Flow C", current: "C", batches: [["A", "B"], ["C"]], text: "R0 and R3 conflict with Batch 0. Create Batch 1.", status: "Conflict → B1", conflict: 0 },
+      { label: "Flow D", current: "D", batches: [["A", "B"], ["C", "D"]], text: "Batch 0 conflicts. R2 and R1 are free in Batch 1.", status: "Place in B1", fit: 1, conflict: 0 },
+      { label: "Done", current: null, batches: [["A", "B"], ["C", "D"]], text: "Disjoint pairs run together; shared ranks are separated.", status: "2 batches" }
     ];
 
-    const rankPositions = {
-      0: [16, 18], 1: [16, 50], 2: [16, 82],
-      3: [84, 18], 4: [84, 50], 5: [84, 82]
-    };
-    const batchColors = ["var(--b0)", "var(--b1)", "var(--b2)", "var(--green)"];
+    const migrations = [
+      [1, 1, 0], [2, 4, 2], [3, 5, 3], [4, 6, 2],
+      [5, 7, 1], [6, 0, 4], [7, 1, 5], [8, 1, 6]
+    ];
+    const optimalBatches = [[8, 2], [7, 4], [6, 5], [1, 3]];
+    const migrationById = Object.fromEntries(migrations.map(item => [item[0], item]));
+    const assignedBatch = {};
+    optimalBatches.forEach((batch, batchIndex) => batch.forEach(id => { assignedBatch[id] = batchIndex; }));
 
-    function cloneBatches(batches) {
-      return batches.map(batch => batch.map(flow => flow.id));
-    }
+    const ilpSteps = [
+      { label: "Example", title: "Example input" },
+      { label: "Variables", title: "Decision variables" },
+      { label: "Assign", title: "Assign each migration once" },
+      { label: "Conflict", title: "Keep ranks conflict-free" },
+      { label: "Time", title: "Model inference time" },
+      { label: "Objective", title: "Minimize inference time" }
+    ];
 
-    function buildEvents() {
-      const events = [
-        {
-          phase: "discover", kind: "raw", batches: [],
-          title: "Find remote expert moves",
-          text: "Compare the old and new expert placement. Existing local copies do not need a transfer.",
-          result: "Input"
-        },
-        {
-          phase: "discover", kind: "coalesce", batches: [],
-          title: "Coalesce identical rank pairs",
-          text: "E2 and E7 both move from rank 0 to rank 3, so they become one flow. One endpoint decision now covers both experts.",
-          result: "6 flows"
-        }
-      ];
-      const batches = [];
-
-      for (const flow of flows) {
-        events.push({
-          phase: "scan", kind: "consider", flowId: flow.id,
-          batches: cloneBatches(batches),
-          title: `Consider flow ${flow.id}: rank ${flow.src} → rank ${flow.dst}`,
-          text: "Scan existing batches in order. A batch is valid only when both endpoints are unused.",
-          result: "Scanning"
-        });
-
-        let placed = false;
-        for (let index = 0; index < batches.length; index += 1) {
-          const used = new Set(batches[index].flatMap(item => [item.src, item.dst]));
-          const conflicts = [flow.src, flow.dst].filter(rank => used.has(rank));
-          events.push({
-            phase: "scan", kind: "test", flowId: flow.id, batchIndex: index,
-            conflicts, batches: cloneBatches(batches),
-            title: `Test batch ${index}`,
-            text: conflicts.length
-              ? `Reject: rank ${conflicts.join(" and rank ")} ${conflicts.length > 1 ? "are" : "is"} already active in this batch.`
-              : `Accept: ranks ${flow.src} and ${flow.dst} are both free. Independent pairs remain concurrent.`,
-            result: conflicts.length ? "Conflict" : "Fits"
-          });
-          if (!conflicts.length) {
-            batches[index].push(flow);
-            events.push({
-              phase: "place", kind: "place", flowId: flow.id, batchIndex: index,
-              batches: cloneBatches(batches),
-              title: `Place flow ${flow.id} in batch ${index}`,
-              text: `Batch ${index} now reserves ranks ${flow.src} and ${flow.dst} for this communication peer pair.`,
-              result: "Placed"
-            });
-            placed = true;
-            break;
-          }
-        }
-
-        if (!placed) {
-          batches.push([flow]);
-          const index = batches.length - 1;
-          events.push({
-            phase: "place", kind: "new", flowId: flow.id, batchIndex: index,
-            batches: cloneBatches(batches),
-            title: `Create batch ${index}`,
-            text: `No existing batch can accept both endpoints, so flow ${flow.id} starts a new conflict-free batch.`,
-            result: "New batch"
-          });
-        }
-      }
-
-      events.push({
-        phase: "execute", kind: "done", batches: cloneBatches(batches),
-        title: "Execute batches in order",
-        text: "Within a batch, disjoint pairs transfer concurrently. Each batch gets its own communicator.execute() call, preserving the boundaries.",
-        result: `${batches.length} batches`
-      });
-      return events;
-    }
-
-    const events = buildEvents();
-    let step = 0;
-    let timer = null;
-
-    const elements = {
-      reset: document.querySelector("#resetBtn"),
-      back: document.querySelector("#backBtn"),
-      next: document.querySelector("#nextBtn"),
-      auto: document.querySelector("#autoBtn"),
-      speed: document.querySelector("#speed"),
-      timeline: document.querySelector("#timeline"),
-      counter: document.querySelector("#counter"),
-      phases: [...document.querySelectorAll(".phase")],
-      flowList: document.querySelector("#flowList"),
-      rawNote: document.querySelector("#rawNote"),
-      stepLabel: document.querySelector("#stepLabel"),
-      kicker: document.querySelector("#decisionKicker"),
-      result: document.querySelector("#decisionResult"),
-      title: document.querySelector("#decisionTitle"),
-      text: document.querySelector("#decisionText"),
-      network: document.querySelector("#network"),
-      svg: document.querySelector("#networkSvg"),
-      batchList: document.querySelector("#batchList"),
-      batchCount: document.querySelector("#batchCount")
+    const state = { mode: "batching", steps: { batching: 0, ilp: 0 }, timer: null };
+    const el = {
+      tabs: [...document.querySelectorAll(".mode-tab")],
+      title: document.querySelector("#modeTitle"),
+      subtitle: document.querySelector("#modeSubtitle"),
+      rule: document.querySelector("#modeRule"),
+      steps: document.querySelector("#steps"),
+      canvas: document.querySelector("#canvas"),
+      reset: document.querySelector("#reset"),
+      prev: document.querySelector("#prev"),
+      next: document.querySelector("#next"),
+      play: document.querySelector("#play"),
+      counter: document.querySelector("#counter")
     };
 
-    elements.timeline.max = String(events.length - 1);
+    function flow(id) { return greedyFlows.find(item => item.id === id); }
+    function currentStep() { return state.steps[state.mode]; }
+    function stepCount() { return state.mode === "batching" ? batchingSteps.length : ilpSteps.length; }
 
-    function flowById(id) { return flows.find(flow => flow.id === id); }
+    function renderBatching() {
+      const step = batchingSteps[currentStep()];
+      const placed = new Set(step.batches.flat());
+      const flowHtml = greedyFlows.map(item => `
+        <div class="flow ${step.current === item.id ? "current" : ""} ${placed.has(item.id) && step.current !== item.id ? "done" : ""}">
+          <b>${item.id}</b><strong>R${item.src} → R${item.dst}</strong>
+          <small>${placed.has(item.id) ? "placed" : "pending"}</small>
+        </div>`).join("");
 
-    function assignedFlowIds(batches) {
-      return new Set(batches.flat());
-    }
-
-    function jumpToFlow(id) {
-      const index = events.findIndex(event => event.kind === "consider" && event.flowId === id);
-      if (index >= 0) setStep(index);
-    }
-
-    function renderFlows(event) {
-      const assigned = assignedFlowIds(event.batches);
-      const showRaw = event.kind === "raw";
-      elements.rawNote.innerHTML = showRaw
-        ? `<strong>7 expert moves</strong> are discovered. Two share the same directed pair.`
-        : `<strong>6 rank-pair flows.</strong> The 0 → 3 flow carries E2 and E7 together.`;
-
-      const items = showRaw
-        ? rawTransfers.map((item, index) => ({
-            id: String(index + 1), src: item.src, dst: item.dst,
-            experts: [item.expert], raw: true,
-            merged: index < 2
-          }))
-        : flows;
-
-      elements.flowList.innerHTML = items.map(flow => {
-        const isCurrent = !flow.raw && event.flowId === flow.id;
-        const isPlaced = !flow.raw && assigned.has(flow.id);
-        const classes = ["flow-card", isCurrent ? "current" : "", isPlaced ? "placed" : "", flow.merged ? "merged" : ""].join(" ");
-        const state = flow.raw ? (flow.merged ? "same pair" : "raw move") : (isPlaced ? "scheduled" : isCurrent ? "current" : "pending");
-        return `
-          <button class="${classes}" type="button" data-flow="${flow.raw ? "" : flow.id}" ${flow.raw ? "disabled" : ""}>
-            <span class="flow-id">${flow.raw ? flow.experts[0].slice(1) : flow.id}</span>
-            <span>
-              <span class="flow-route">Rank ${flow.src} → Rank ${flow.dst}</span>
-              <span class="flow-experts">${flow.experts.join(" + ")}${flow.merged && !flow.raw ? " · coalesced" : ""}</span>
-            </span>
-            <span class="flow-state">${state}</span>
-          </button>`;
+      const batchHtml = [0, 1].map(index => {
+        const items = step.batches[index] || [];
+        const classes = ["batch", step.conflict === index ? "conflict" : "", step.fit === index ? "fit" : ""].join(" ");
+        const used = [...new Set(items.flatMap(id => { const item = flow(id); return [item.src, item.dst]; }))];
+        return `<div class="${classes}">
+          <div class="batch-head"><span>Batch ${index}</span><span>${used.length ? `used: ${used.map(rank => `R${rank}`).join(" ")}` : "empty"}</span></div>
+          <div class="batch-flows">${items.length ? items.map(id => {
+            const item = flow(id);
+            return `<span class="flow-pill ${step.current === id ? "new" : ""}">${id}: R${item.src} → R${item.dst}</span>`;
+          }).join("") : '<span class="empty">No flow yet</span>'}</div>
+        </div>`;
       }).join("");
 
-      elements.flowList.querySelectorAll("[data-flow]").forEach(button => {
-        if (button.dataset.flow) button.addEventListener("click", () => jumpToFlow(button.dataset.flow));
+      const statusClass = step.status.includes("Conflict") ? "red" : step.status.includes("Place") ? "green" : "";
+      el.canvas.innerHTML = `
+        <div class="two-col">
+          <div class="card"><div class="card-title">Migrations <span>ordered</span></div><div class="card-body flow-list">${flowHtml}</div></div>
+          <div class="card"><div class="card-title">Batches <span>no repeated rank</span></div><div class="card-body batch-board">${batchHtml}</div></div>
+        </div>
+        <div class="message"><span><strong>${step.label}.</strong> ${step.text}</span><span class="status ${statusClass}">${step.status}</span></div>`;
+    }
+
+    function topologyHtml() {
+      return `<div class="topology">${[0, 1, 2, 3].map(server => `
+        <div class="server"><b>Server ${server}</b><div class="gpus"><span class="gpu">R${server * 2}</span><span class="gpu">R${server * 2 + 1}</span></div></div>`).join("")}</div>
+        <div class="network-line"><span>slow inter-server network · C = 2.0</span></div>`;
+    }
+
+    function migrationHtml() {
+      return `<div class="migration-grid">${migrations.map(([id, src, dst]) => `<span class="migration">M${id}: R${src}→R${dst}</span>`).join("")}</div>`;
+    }
+
+    function matrixHtml(highlightConflict = false) {
+      const cells = ['<div class="cell head">x</div>', ...[0, 1, 2, 3].map(b => `<div class="cell head">B${b}</div>`)];
+      migrations.forEach(([id]) => {
+        cells.push(`<div class="cell head">M${id}</div>`);
+        [0, 1, 2, 3].forEach(batch => cells.push(`<div class="cell ${assignedBatch[id] === batch ? "on" : ""}">${assignedBatch[id] === batch ? "1" : "0"}</div>`));
       });
+      return `<div class="matrix ${highlightConflict ? "highlight" : ""}">${cells.join("")}</div>`;
     }
 
-    function endpointsForBatch(batch) {
-      return [...new Set(batch.flatMap(id => {
-        const flow = flowById(id);
-        return [flow.src, flow.dst];
-      }))].sort((a, b) => a - b);
+    function batchResultHtml() {
+      return `<div class="batch-result">${optimalBatches.map((batch, index) => `<div><b>BATCH ${index}</b><span>${batch.map(id => { const item = migrationById[id]; return `M${id}: R${item[1]}→R${item[2]}`; }).join("<br>")}</span></div>`).join("")}</div>`;
     }
 
-    function renderBatches(event) {
-      elements.batchCount.textContent = `${event.batches.length} ${event.batches.length === 1 ? "batch" : "batches"}`;
-      if (!event.batches.length) {
-        elements.batchList.innerHTML = `<div class="empty-state">Batches appear here as flows are placed.<br>Use Next or Auto to run the scheduler.</div>`;
-        return;
+    function renderIlp() {
+      const index = currentStep();
+      if (index === 0) {
+        el.canvas.innerHTML = `<div class="card"><div class="card-title">example_hotspot.json <span>8 migrations · 8 GPUs</span></div><div class="card-body">
+          ${topologyHtml()}
+          <div class="params"><span class="chip">T₀ = 1.0</span><span class="chip">ρ = 0.6</span><span class="chip">C_local = 18</span><span class="chip">C_network = 2</span></div>
+          ${migrationHtml()}
+        </div></div>`;
+      } else if (index === 1) {
+        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">x[p,b] · y[b] · T_infer</div><div class="formula-note">assignment · active batch · predicted inference time</div></div></div>
+          <div class="var-grid">
+            <div class="var-card"><code>x[p,b] ∈ {0,1}</code><p>Migration p is assigned to batch b.</p></div>
+            <div class="var-card"><code>y[b] ∈ {0,1}</code><p>Batch b is active.</p></div>
+            <div class="var-card"><code>T_infer ≥ T₀</code><p>Worst inference time during migration.</p></div>
+          </div>`;
+      } else if (index === 2) {
+        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">Σ_b x[p,b] = 1 &nbsp; · &nbsp; x[p,b] ≤ y[b] &nbsp; · &nbsp; y[b] ≥ y[b+1]</div><div class="formula-note">Assign once · activate its batch · keep active batches contiguous.</div></div></div>${matrixHtml()}`;
+      } else if (index === 3) {
+        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">Σ_{p : r∈p} x[p,b] ≤ 1</div><div class="formula-note">A rank has at most one peer in each batch.</div></div></div>${batchResultHtml()}`;
+      } else if (index === 4) {
+        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">T_infer ≥ T₀ · (1 + L[e,b] / (C[e] · (1−ρ)))</div><div class="formula-note">L[e,b] = Σ_p w[p] · f[p,e] · x[p,b]</div></div></div>
+          <div class="result-grid">
+            <div class="result-card"><h3>Unbatched peak load</h3><div class="metric"><span>Link utilization</span><strong>1.50</strong></div><div class="bar"><i style="width:100%"></i></div></div>
+            <div class="result-card optimal"><h3>ILP peak load</h3><div class="metric"><span>Link utilization</span><strong>0.50</strong></div><div class="bar"><i style="width:33.33%"></i></div></div>
+          </div>`;
+      } else {
+        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">min T_infer</div><div class="formula-note">Batch count only breaks ties after inference time is optimal.</div></div></div>
+          <div class="result-grid">
+            <div class="result-card"><h3>Unbatched</h3><div class="metric"><span>Inference time</span><strong>4.75</strong></div><div class="metric"><span>Migration time</span><strong>1.55</strong></div><div class="metric"><span>Batches</span><strong>1</strong></div></div>
+            <div class="result-card optimal"><h3>ILP optimal</h3><div class="metric"><span>Inference time</span><strong>2.25</strong></div><div class="metric"><span>Migration time</span><strong>2.20</strong></div><div class="metric"><span>Batches</span><strong>4</strong></div></div>
+          </div>`;
       }
-      elements.batchList.innerHTML = event.batches.map((batch, index) => {
-        const isTesting = event.kind === "test" && event.batchIndex === index;
-        const stateClass = isTesting ? (event.conflicts.length ? "reject" : "accept") : "";
-        const endpoints = endpointsForBatch(batch);
-        return `
-          <article class="batch-card ${isTesting ? "testing" : ""} ${stateClass}" style="--batch-color:${batchColors[index % batchColors.length]}">
-            <div class="batch-title">
-              <span>Batch ${index}</span>
-              <span class="batch-dot"></span>
-            </div>
-            <div class="batch-content">
-              ${batch.map(id => {
-                const flow = flowById(id);
-                return `<div class="batch-flow"><strong>${id}: ${flow.src} → ${flow.dst}</strong><span>${flow.experts.join(", ")}</span></div>`;
-              }).join("")}
-              <div class="endpoint-row">${endpoints.map(rank => `<span class="endpoint-chip">R${rank}</span>`).join("")}</div>
-            </div>
-          </article>`;
-      }).join("");
     }
 
-    function lineMarkup(flow, color, width, opacity, dashed = false) {
-      const [x1, y1] = rankPositions[flow.src];
-      const [x2, y2] = rankPositions[flow.dst];
-      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
-        stroke="${color}" stroke-width="${width}" opacity="${opacity}"
-        ${dashed ? 'stroke-dasharray="3 2"' : ""} vector-effect="non-scaling-stroke"
-        marker-end="url(#arrow)" />`;
+    function stop() {
+      if (state.timer) clearInterval(state.timer);
+      state.timer = null;
+      el.play.textContent = "Play";
+      el.play.classList.remove("playing");
     }
 
-    function renderNetwork(event) {
-      elements.network.querySelectorAll(".rank").forEach(node => node.remove());
-      const used = new Set();
-      event.batches.forEach(batch => batch.forEach(id => {
-        const flow = flowById(id);
-        used.add(flow.src); used.add(flow.dst);
-      }));
-      const current = event.flowId ? flowById(event.flowId) : null;
-      const conflicts = new Set(event.conflicts || []);
-      const isFit = event.kind === "test" && !conflicts.size;
-
-      Object.entries(rankPositions).forEach(([rankText, position]) => {
-        const rank = Number(rankText);
-        const node = document.createElement("div");
-        const classes = ["rank"];
-        if (used.has(rank)) classes.push("used");
-        if (current && (current.src === rank || current.dst === rank)) classes.push("candidate");
-        if (conflicts.has(rank)) classes.push("conflict");
-        if (isFit && current && (current.src === rank || current.dst === rank)) classes.push("free");
-        node.className = classes.join(" ");
-        node.style.left = `${position[0]}%`;
-        node.style.top = `${position[1]}%`;
-        node.innerHTML = `<span>R${rank}<small>rank</small></span>`;
-        elements.network.appendChild(node);
-      });
-
-      let lines = elements.svg.querySelector("defs").outerHTML;
-      event.batches.forEach((batch, batchIndex) => batch.forEach(id => {
-        lines += lineMarkup(flowById(id), batchColors[batchIndex % batchColors.length], 2.2, .72);
-      }));
-      if (current && !assignedFlowIds(event.batches).has(current.id)) {
-        lines += lineMarkup(current, "var(--cyan)", 3.2, 1, true);
-      }
-      elements.svg.innerHTML = lines;
-    }
-
-    function renderDecision(event) {
-      const labels = { discover: "Build flows", scan: "Scan batches", place: "Place flow", execute: "Execute" };
-      elements.stepLabel.textContent = labels[event.phase];
-      elements.kicker.textContent = labels[event.phase];
-      elements.title.textContent = event.title;
-      elements.text.textContent = event.text;
-      elements.result.textContent = event.result;
-      elements.result.className = `decision-result ${event.kind === "test" ? (event.conflicts.length ? "conflict" : "fit") : "neutral"}`;
-      elements.phases.forEach(phase => phase.classList.toggle("active", phase.dataset.phase === event.phase));
-    }
-
-    function render() {
-      const event = events[step];
-      renderFlows(event);
-      renderBatches(event);
-      renderNetwork(event);
-      renderDecision(event);
-      elements.timeline.value = String(step);
-      elements.counter.textContent = `${step + 1} / ${events.length}`;
-      elements.back.disabled = step === 0;
-      elements.next.disabled = step === events.length - 1;
-      if (step === events.length - 1) stopAuto();
-    }
-
-    function setStep(nextStep) {
-      step = Math.max(0, Math.min(events.length - 1, nextStep));
+    function setStep(next) {
+      state.steps[state.mode] = Math.max(0, Math.min(stepCount() - 1, next));
       render();
     }
 
-    function stopAuto() {
-      if (timer) clearInterval(timer);
-      timer = null;
-      elements.auto.textContent = "Auto";
-      elements.auto.classList.remove("playing");
+    function render() {
+      const index = currentStep();
+      const steps = state.mode === "batching" ? batchingSteps : ilpSteps;
+      el.tabs.forEach(tab => tab.classList.toggle("active", tab.dataset.mode === state.mode));
+      el.title.textContent = state.mode === "batching" ? "Greedy batching" : "ILP model";
+      el.subtitle.textContent = state.mode === "batching" ? "Place each migration into the earliest conflict-free batch." : "Variables, constraints, and one objective.";
+      el.rule.textContent = state.mode === "batching" ? "endpoints(flow) ∩ used(batch) = ∅" : "objective: min T_infer";
+      el.steps.innerHTML = steps.map((item, stepIndex) => `<button class="step-dot ${stepIndex === index ? "active" : stepIndex < index ? "done" : ""}" data-step="${stepIndex}" type="button">${stepIndex + 1}. ${item.label}</button>`).join("");
+      el.steps.querySelectorAll(".step-dot").forEach(button => button.addEventListener("click", () => { stop(); setStep(Number(button.dataset.step)); }));
+      if (state.mode === "batching") renderBatching(); else renderIlp();
+      el.prev.disabled = index === 0;
+      el.next.disabled = index === steps.length - 1;
+      el.counter.textContent = `${index + 1} / ${steps.length}`;
+      el.canvas.style.animation = "none";
+      requestAnimationFrame(() => { el.canvas.style.animation = ""; });
     }
 
-    function toggleAuto() {
-      if (timer) { stopAuto(); return; }
-      if (step === events.length - 1) setStep(0);
-      const delay = 2250 - Number(elements.speed.value);
-      timer = setInterval(() => {
-        if (step >= events.length - 1) stopAuto();
-        else setStep(step + 1);
-      }, delay);
-      elements.auto.textContent = "Pause";
-      elements.auto.classList.add("playing");
+    function togglePlay() {
+      if (state.timer) { stop(); return; }
+      if (currentStep() === stepCount() - 1) setStep(0);
+      state.timer = setInterval(() => {
+        if (currentStep() === stepCount() - 1) stop(); else setStep(currentStep() + 1);
+      }, 1500);
+      el.play.textContent = "Pause";
+      el.play.classList.add("playing");
     }
 
-    elements.reset.addEventListener("click", () => { stopAuto(); setStep(0); });
-    elements.back.addEventListener("click", () => { stopAuto(); setStep(step - 1); });
-    elements.next.addEventListener("click", () => { stopAuto(); setStep(step + 1); });
-    elements.auto.addEventListener("click", toggleAuto);
-    elements.timeline.addEventListener("input", event => { stopAuto(); setStep(Number(event.target.value)); });
-    elements.speed.addEventListener("change", () => { if (timer) { stopAuto(); toggleAuto(); } });
-
+    el.tabs.forEach(tab => tab.addEventListener("click", () => { stop(); state.mode = tab.dataset.mode; render(); }));
+    el.reset.addEventListener("click", () => { stop(); setStep(0); });
+    el.prev.addEventListener("click", () => { stop(); setStep(currentStep() - 1); });
+    el.next.addEventListener("click", () => { stop(); setStep(currentStep() + 1); });
+    el.play.addEventListener("click", togglePlay);
     document.addEventListener("keydown", event => {
-      if (event.key === "ArrowRight") { stopAuto(); setStep(step + 1); }
-      if (event.key === "ArrowLeft") { stopAuto(); setStep(step - 1); }
-      if (event.code === "Space" && event.target.tagName !== "BUTTON") { event.preventDefault(); toggleAuto(); }
+      if (event.key === "ArrowLeft") { stop(); setStep(currentStep() - 1); }
+      if (event.key === "ArrowRight") { stop(); setStep(currentStep() + 1); }
+      if (event.code === "Space" && event.target.tagName !== "BUTTON") { event.preventDefault(); togglePlay(); }
     });
 
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("mode") === "ilp") state.mode = "ilp";
+    if (query.has("step")) {
+      const requestedStep = Number(query.get("step"));
+      if (Number.isInteger(requestedStep)) {
+        state.steps[state.mode] = Math.max(0, Math.min(stepCount() - 1, requestedStep));
+      }
+    }
     render();
   </script>
 </body>
