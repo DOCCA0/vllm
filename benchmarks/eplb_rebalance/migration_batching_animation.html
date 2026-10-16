@@ -3,22 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Migration Batching: Greedy and ILP</title>
+  <title>Migration Batching</title>
   <style>
     :root {
       color-scheme: dark;
       --bg: #08111d;
-      --panel: #101c2c;
-      --panel-2: #15243a;
-      --line: #2a3d58;
-      --text: #f3f7fc;
-      --muted: #90a1b8;
-      --cyan: #35d1ed;
-      --green: #62e6a0;
+      --panel: #101d2e;
+      --panel-2: #15253b;
+      --line: #2a3f5c;
+      --text: #f2f7fc;
+      --muted: #91a4bc;
+      --cyan: #38d5ef;
+      --green: #65e6a3;
       --amber: #ffbd66;
-      --red: #ff7083;
-      --violet: #a98bff;
-      --radius: 18px;
+      --red: #ff7185;
+      --violet: #aa8cff;
     }
 
     * { box-sizing: border-box; }
@@ -27,49 +26,34 @@
       min-height: 100vh;
       color: var(--text);
       background:
-        radial-gradient(circle at 10% 0%, rgba(53, 209, 237, .10), transparent 28%),
-        radial-gradient(circle at 90% 10%, rgba(169, 139, 255, .10), transparent 30%),
+        radial-gradient(circle at 12% 0%, rgba(56, 213, 239, .10), transparent 28%),
+        radial-gradient(circle at 90% 8%, rgba(170, 140, 255, .09), transparent 30%),
         var(--bg);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
         "Segoe UI", sans-serif;
     }
 
     button { font: inherit; }
-    .page { width: min(1180px, calc(100% - 28px)); margin: auto; padding: 28px 0; }
-    header { margin-bottom: 18px; }
+    .page { width: min(1120px, calc(100% - 28px)); margin: auto; padding: 28px 0; }
+    header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
     .eyebrow { margin: 0 0 7px; color: var(--cyan); font-size: 11px; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
-    h1 { margin: 0; font-size: clamp(30px, 4.5vw, 50px); line-height: 1.05; letter-spacing: -.04em; }
+    h1 { margin: 0; font-size: clamp(32px, 5vw, 54px); line-height: 1.04; letter-spacing: -.045em; }
     .subtitle { margin: 9px 0 0; color: var(--muted); font-size: 14px; }
-
-    .mode-tabs {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-bottom: 12px;
-      padding: 6px;
-      border: 1px solid var(--line);
-      border-radius: 15px;
-      background: rgba(16, 28, 44, .85);
+    .summary {
+      flex: 0 0 auto;
+      padding: 11px 14px;
+      border: 1px solid rgba(101, 230, 163, .4);
+      border-radius: 12px;
+      color: #c9ffdf;
+      background: rgba(101, 230, 163, .07);
+      font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-
-    .mode-tab {
-      min-height: 48px;
-      border: 1px solid transparent;
-      border-radius: 11px;
-      color: var(--muted);
-      background: transparent;
-      cursor: pointer;
-      font-weight: 800;
-      transition: .2s ease;
-    }
-    .mode-tab:hover { color: var(--text); background: rgba(255, 255, 255, .035); }
-    .mode-tab.active { border-color: rgba(53, 209, 237, .5); color: var(--cyan); background: rgba(53, 209, 237, .09); }
 
     .stage {
       overflow: hidden;
       border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: linear-gradient(180deg, rgba(19, 35, 56, .96), rgba(11, 23, 38, .98));
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(20, 37, 59, .96), rgba(10, 22, 37, .98));
       box-shadow: 0 24px 70px rgba(0, 0, 0, .24);
     }
 
@@ -77,112 +61,87 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 20px;
-      min-height: 78px;
-      padding: 15px 20px;
+      gap: 18px;
+      min-height: 72px;
+      padding: 14px 20px;
       border-bottom: 1px solid var(--line);
     }
-    .stage-head h2 { margin: 0 0 5px; font-size: 21px; letter-spacing: -.025em; }
+    .stage-head h2 { margin: 0 0 5px; font-size: 20px; }
     .stage-head p { margin: 0; color: var(--muted); font-size: 12px; }
     .rule {
-      flex: 0 0 auto;
       padding: 9px 12px;
-      border: 1px solid rgba(98, 230, 160, .35);
+      border: 1px solid rgba(56, 213, 239, .4);
       border-radius: 10px;
-      color: #caffdf;
-      background: rgba(98, 230, 160, .07);
+      color: var(--cyan);
+      background: rgba(56, 213, 239, .07);
       font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
     }
 
     .steps { display: flex; gap: 7px; padding: 12px 20px 0; overflow-x: auto; }
-    .step-dot {
+    .step {
       flex: 1 0 auto;
-      min-width: 92px;
+      min-width: 86px;
       padding: 8px 10px;
       border: 1px solid var(--line);
       border-radius: 9px;
-      color: #70839d;
-      background: #0c1828;
+      color: #71859f;
+      background: #0b1828;
       cursor: pointer;
       font-size: 10px;
-      font-weight: 800;
+      font-weight: 900;
       letter-spacing: .04em;
       text-transform: uppercase;
     }
-    .step-dot.active { border-color: var(--cyan); color: var(--cyan); background: rgba(53, 209, 237, .08); }
-    .step-dot.done { color: #b3c3d7; border-color: #3a516f; }
+    .step.active { border-color: var(--cyan); color: var(--cyan); background: rgba(56, 213, 239, .08); }
+    .step.done { color: #b5c5d8; border-color: #3c5472; }
 
-    #canvas { padding: 18px 20px; animation: fade .22s ease; }
-    @keyframes fade { from { opacity: .35; transform: translateY(3px); } }
-
-    .controls {
-      display: grid;
-      grid-template-columns: auto auto auto auto 1fr;
-      align-items: center;
-      gap: 8px;
-      padding: 12px 20px;
-      border-top: 1px solid var(--line);
-      background: #0b1727;
-    }
-    .btn {
-      min-height: 38px;
-      padding: 0 15px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      color: var(--text);
-      background: var(--panel-2);
-      cursor: pointer;
-    }
-    .btn:hover:not(:disabled) { border-color: #476585; transform: translateY(-1px); }
-    .btn:disabled { opacity: .32; cursor: default; }
-    .btn.primary { border-color: #248ea5; background: #0c4f61; }
-    .btn.playing { border-color: #a97836; background: #533915; }
-    .counter { color: var(--muted); font-size: 11px; text-align: right; }
-
-    .two-col { display: grid; grid-template-columns: .8fr 1.2fr; gap: 14px; min-height: 465px; }
+    #canvas { padding: 18px 20px; }
+    .workspace { display: grid; grid-template-columns: .9fr 1.1fr; gap: 14px; min-height: 440px; }
     .card { border: 1px solid var(--line); border-radius: 14px; background: rgba(8, 20, 34, .66); }
     .card-title { display: flex; align-items: center; justify-content: space-between; min-height: 45px; padding: 0 14px; border-bottom: 1px solid var(--line); font-size: 12px; font-weight: 900; }
     .card-title span { color: var(--muted); font-size: 10px; font-weight: 600; }
     .card-body { padding: 13px; }
 
-    .flow-list { display: grid; gap: 8px; }
+    .flow-list { display: grid; gap: 9px; }
     .flow {
       display: grid;
-      grid-template-columns: 28px 1fr auto;
+      grid-template-columns: 30px 1fr auto;
       align-items: center;
-      gap: 9px;
-      padding: 9px 10px;
+      gap: 10px;
+      padding: 10px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      color: var(--muted);
-      background: #112137;
+      border-radius: 11px;
+      background: #112238;
       transition: .22s ease;
     }
-    .flow b { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 8px; color: #07111d; background: var(--cyan); font-size: 11px; }
-    .flow strong { color: var(--text); font-size: 13px; }
-    .flow small { font-size: 9px; text-transform: uppercase; }
-    .flow.current { border-color: var(--cyan); transform: translateX(3px); background: rgba(53, 209, 237, .08); }
-    .flow.done { opacity: .42; }
+    .flow-id { display: grid; place-items: center; width: 29px; height: 29px; border-radius: 8px; color: #07131c; background: var(--cyan); font-size: 11px; font-weight: 900; }
+    .route { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 900; }
+    .experts { display: flex; flex-wrap: wrap; gap: 4px; }
+    .expert { padding: 3px 6px; border-radius: 5px; color: #d9ccff; background: rgba(170, 140, 255, .16); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .count { color: var(--muted); font-size: 9px; text-transform: uppercase; }
+    .flow.current { border-color: var(--cyan); transform: translateX(3px); background: rgba(56, 213, 239, .08); }
+    .flow.done { opacity: .43; }
 
-    .batch-board { display: grid; gap: 11px; }
+    .batch-board { display: grid; gap: 12px; }
     .batch {
-      min-height: 92px;
+      min-height: 145px;
       padding: 12px;
       border: 1px solid var(--line);
       border-radius: 12px;
-      background: #0d1b2d;
+      background: #0d1b2e;
       transition: .22s ease;
     }
-    .batch.testing { border-color: var(--cyan); }
-    .batch.conflict { border-color: var(--red); background: rgba(255, 112, 131, .07); }
-    .batch.fit { border-color: var(--green); background: rgba(98, 230, 160, .06); }
+    .batch.conflict { border-color: var(--red); background: rgba(255, 113, 133, .07); }
+    .batch.fit { border-color: var(--green); background: rgba(101, 230, 163, .06); }
     .batch-head { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 11px; font-weight: 900; }
     .batch-head span:last-child { color: var(--muted); font-weight: 600; }
-    .batch-flows { display: flex; flex-wrap: wrap; gap: 7px; }
-    .flow-pill { padding: 7px 9px; border-radius: 8px; color: #dce9f7; background: #1a2d46; font-size: 11px; font-weight: 800; }
-    .flow-pill.new { color: #06131d; background: var(--green); animation: pop .25s ease; }
-    @keyframes pop { 50% { transform: scale(1.06); } }
-    .empty { color: #62758f; font-size: 11px; }
+    .batch-flows { display: grid; gap: 7px; }
+    .batch-flow { display: grid; grid-template-columns: auto 1fr; gap: 9px; align-items: center; padding: 8px 9px; border-radius: 9px; background: #182c46; }
+    .batch-flow.new { color: #07131c; background: var(--green); animation: pop .25s ease; }
+    .batch-flow strong { font-size: 11px; }
+    .batch-flow .expert { color: inherit; background: rgba(255, 255, 255, .10); }
+    .empty { color: #61758f; font-size: 11px; }
+    @keyframes pop { 50% { transform: scale(1.035); } }
 
     .message {
       display: flex;
@@ -202,60 +161,37 @@
     .status.red { color: var(--red); }
     .status.green { color: var(--green); }
 
-    .topology { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
-    .server { padding: 10px; border: 1px solid #334b6a; border-radius: 11px; background: #102238; text-align: center; }
-    .server b { display: block; margin-bottom: 8px; color: var(--muted); font-size: 9px; text-transform: uppercase; }
-    .gpus { display: flex; justify-content: center; gap: 5px; }
-    .gpu { padding: 5px 7px; border-radius: 7px; color: #07111d; background: var(--cyan); font-size: 10px; font-weight: 900; }
-    .network-line { margin: 0 8% 16px; border-top: 3px solid var(--amber); color: var(--amber); font-size: 9px; text-align: center; }
-    .network-line span { position: relative; top: -8px; padding: 0 8px; background: #0d1b2d; }
+    .idea-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+    .idea { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); background: #0d1b2d; font-size: 10px; }
+    .idea b { color: var(--text); }
 
-    .params, .migration-grid { display: flex; flex-wrap: wrap; gap: 6px; }
-    .chip { padding: 6px 8px; border: 1px solid #334b6a; border-radius: 8px; color: #b8c8db; background: #12243a; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .migration-grid { margin-top: 10px; }
-    .migration { padding: 6px 8px; border-radius: 8px; color: #cfe1f4; background: #182c45; font-size: 10px; font-weight: 800; }
+    .controls {
+      display: grid;
+      grid-template-columns: auto auto auto auto 1fr;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 20px;
+      border-top: 1px solid var(--line);
+      background: #0a1727;
+    }
+    .btn { min-height: 38px; padding: 0 15px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); background: var(--panel-2); cursor: pointer; }
+    .btn:hover:not(:disabled) { border-color: #486786; transform: translateY(-1px); }
+    .btn:disabled { opacity: .32; cursor: default; }
+    .btn.primary { border-color: #258fa6; background: #0c5062; }
+    .btn.playing { border-color: #a97937; background: #513814; }
+    .counter { color: var(--muted); font-size: 11px; text-align: right; }
 
-    .formula-box { display: grid; place-items: center; min-height: 105px; margin-bottom: 12px; padding: 14px; border: 1px solid #38506d; border-radius: 13px; color: #eaf6ff; background: #0b192a; text-align: center; }
-    .formula { color: var(--cyan); font: clamp(15px, 2.2vw, 22px)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .formula-note { margin-top: 7px; color: var(--muted); font-size: 11px; }
-
-    .var-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
-    .var-card { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #102138; }
-    .var-card code { display: block; margin-bottom: 7px; color: var(--cyan); font-size: 19px; }
-    .var-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
-
-    .matrix { display: grid; grid-template-columns: 48px repeat(4, 1fr); gap: 4px; }
-    .cell { display: grid; place-items: center; min-height: 29px; border-radius: 6px; color: #6f839e; background: #102036; font-size: 9px; font-weight: 800; }
-    .cell.head { color: #b8c9dc; background: #182c45; }
-    .cell.on { color: #07111d; background: var(--green); }
-
-    .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    .result-card { padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: #102138; }
-    .result-card.optimal { border-color: rgba(98, 230, 160, .5); background: rgba(98, 230, 160, .06); }
-    .result-card h3 { margin: 0 0 12px; font-size: 13px; }
-    .metric { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid rgba(42, 61, 88, .7); color: var(--muted); font-size: 11px; }
-    .metric strong { color: var(--text); }
-    .bar { height: 8px; margin-top: 10px; overflow: hidden; border-radius: 5px; background: #223650; }
-    .bar i { display: block; height: 100%; background: var(--red); }
-    .optimal .bar i { background: var(--green); }
-
-    .batch-result { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 10px; }
-    .batch-result div { padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #102138; }
-    .batch-result b { display: block; margin-bottom: 5px; color: var(--cyan); font-size: 9px; }
-    .batch-result span { color: #c7d6e7; font-size: 9px; }
-
-    @media (max-width: 760px) {
-      .page { width: min(100% - 16px, 1180px); padding: 16px 0; }
-      .stage-head { align-items: flex-start; flex-direction: column; }
-      .rule { width: 100%; }
-      .two-col { grid-template-columns: 1fr; min-height: 0; }
-      .topology { grid-template-columns: 1fr 1fr; }
-      .var-grid { grid-template-columns: 1fr; }
-      .batch-result { grid-template-columns: 1fr 1fr; }
-      .steps { flex-wrap: wrap; }
-      .step-dot { flex: 1 0 calc(33.333% - 7px); min-width: 92px; }
+    @media (max-width: 720px) {
+      .page { width: min(100% - 16px, 1120px); padding: 16px 0; }
+      header, .stage-head { align-items: flex-start; flex-direction: column; }
+      .summary, .rule { width: 100%; }
+      .steps { flex-wrap: wrap; padding-inline: 12px; }
+      .step { flex: 1 0 calc(33.333% - 7px); }
+      #canvas { padding-inline: 12px; }
+      .workspace { grid-template-columns: 1fr; min-height: 0; }
+      .batch { min-height: 110px; }
       .controls { grid-template-columns: repeat(4, auto) 1fr; padding-inline: 12px; }
-      #canvas, .steps { padding-inline: 12px; }
+      .idea-strip { grid-template-columns: 1fr; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -266,23 +202,21 @@
 <body>
   <main class="page">
     <header>
-      <p class="eyebrow">Interactive explainer</p>
-      <h1>Migration Batching</h1>
-      <p class="subtitle">One simple heuristic. One optimization model.</p>
+      <div>
+        <p class="eyebrow">Interactive explainer</p>
+        <h1>Migration Batching</h1>
+        <p class="subtitle">Group experts by rank pair, then separate rank conflicts.</p>
+      </div>
+      <div class="summary">7 experts → 4 flows → 2 batches</div>
     </header>
-
-    <nav class="mode-tabs" aria-label="Demo mode">
-      <button class="mode-tab active" data-mode="batching" type="button">1. Greedy batching</button>
-      <button class="mode-tab" data-mode="ilp" type="button">2. ILP model</button>
-    </nav>
 
     <section class="stage">
       <div class="stage-head">
         <div>
-          <h2 id="modeTitle"></h2>
-          <p id="modeSubtitle"></p>
+          <h2>Greedy batching</h2>
+          <p>Expert count belongs to the flow. Endpoints decide the batch.</p>
         </div>
-        <div class="rule" id="modeRule"></div>
+        <div class="rule">endpoints(flow) ∩ used(batch) = ∅</div>
       </div>
       <div class="steps" id="steps"></div>
       <div id="canvas" aria-live="polite"></div>
@@ -299,46 +233,24 @@
   <script>
     "use strict";
 
-    const greedyFlows = [
-      { id: "A", src: 0, dst: 2 },
-      { id: "B", src: 1, dst: 3 },
-      { id: "C", src: 0, dst: 3 },
-      { id: "D", src: 2, dst: 1 }
+    const flows = [
+      { id: "A", src: 0, dst: 2, experts: ["E1", "E7"] },
+      { id: "B", src: 1, dst: 3, experts: ["E4"] },
+      { id: "C", src: 0, dst: 3, experts: ["E2", "E5", "E9"] },
+      { id: "D", src: 2, dst: 1, experts: ["E6"] }
     ];
 
-    const batchingSteps = [
-      { label: "Input", current: null, batches: [], text: "Process migrations in order.", status: "Start" },
-      { label: "Flow A", current: "A", batches: [["A"]], text: "No batch exists. Create Batch 0.", status: "New batch" },
-      { label: "Flow B", current: "B", batches: [["A", "B"]], text: "R1 and R3 are free in Batch 0.", status: "Place in B0", fit: 0 },
-      { label: "Flow C", current: "C", batches: [["A", "B"], ["C"]], text: "R0 and R3 conflict with Batch 0. Create Batch 1.", status: "Conflict → B1", conflict: 0 },
-      { label: "Flow D", current: "D", batches: [["A", "B"], ["C", "D"]], text: "Batch 0 conflicts. R2 and R1 are free in Batch 1.", status: "Place in B1", fit: 1, conflict: 0 },
-      { label: "Done", current: null, batches: [["A", "B"], ["C", "D"]], text: "Disjoint pairs run together; shared ranks are separated.", status: "2 batches" }
+    const steps = [
+      { label: "Input", current: null, batches: [], text: "Four rank-pair flows carry seven experts.", status: "Start" },
+      { label: "Flow A", current: "A", batches: [["A"]], text: "A carries E1 and E7 together. Create Batch 0.", status: "New Batch 0" },
+      { label: "Flow B", current: "B", batches: [["A", "B"]], text: "R1 and R3 are free in Batch 0. E4 can run with Flow A.", status: "Place in B0", fit: 0 },
+      { label: "Flow C", current: "C", batches: [["A", "B"], ["C"]], text: "C carries three experts, but only R0 and R3 determine the conflict.", status: "Conflict → B1", conflict: 0 },
+      { label: "Flow D", current: "D", batches: [["A", "B"], ["C", "D"]], text: "Batch 0 conflicts. R2 and R1 are free in Batch 1.", status: "Place in B1", conflict: 0, fit: 1 },
+      { label: "Done", current: null, batches: [["A", "B"], ["C", "D"]], text: "All experts in one flow move together; no rank repeats inside a batch.", status: "2 batches" }
     ];
 
-    const migrations = [
-      [1, 1, 0], [2, 4, 2], [3, 5, 3], [4, 6, 2],
-      [5, 7, 1], [6, 0, 4], [7, 1, 5], [8, 1, 6]
-    ];
-    const optimalBatches = [[8, 2], [7, 4], [6, 5], [1, 3]];
-    const migrationById = Object.fromEntries(migrations.map(item => [item[0], item]));
-    const assignedBatch = {};
-    optimalBatches.forEach((batch, batchIndex) => batch.forEach(id => { assignedBatch[id] = batchIndex; }));
-
-    const ilpSteps = [
-      { label: "Example", title: "Example input" },
-      { label: "Variables", title: "Decision variables" },
-      { label: "Assign", title: "Assign each migration once" },
-      { label: "Conflict", title: "Keep ranks conflict-free" },
-      { label: "Time", title: "Model inference time" },
-      { label: "Objective", title: "Minimize inference time" }
-    ];
-
-    const state = { mode: "batching", steps: { batching: 0, ilp: 0 }, timer: null };
+    const state = { step: 0, timer: null };
     const el = {
-      tabs: [...document.querySelectorAll(".mode-tab")],
-      title: document.querySelector("#modeTitle"),
-      subtitle: document.querySelector("#modeSubtitle"),
-      rule: document.querySelector("#modeRule"),
       steps: document.querySelector("#steps"),
       canvas: document.querySelector("#canvas"),
       reset: document.querySelector("#reset"),
@@ -348,96 +260,57 @@
       counter: document.querySelector("#counter")
     };
 
-    function flow(id) { return greedyFlows.find(item => item.id === id); }
-    function currentStep() { return state.steps[state.mode]; }
-    function stepCount() { return state.mode === "batching" ? batchingSteps.length : ilpSteps.length; }
+    function flow(id) { return flows.find(item => item.id === id); }
+    function expertChips(item) { return item.experts.map(expert => `<span class="expert">${expert}</span>`).join(""); }
 
-    function renderBatching() {
-      const step = batchingSteps[currentStep()];
+    function renderFlows(step) {
       const placed = new Set(step.batches.flat());
-      const flowHtml = greedyFlows.map(item => `
+      return flows.map(item => `
         <div class="flow ${step.current === item.id ? "current" : ""} ${placed.has(item.id) && step.current !== item.id ? "done" : ""}">
-          <b>${item.id}</b><strong>R${item.src} → R${item.dst}</strong>
-          <small>${placed.has(item.id) ? "placed" : "pending"}</small>
+          <span class="flow-id">${item.id}</span>
+          <span><span class="route">R${item.src} → R${item.dst}</span><span class="experts">${expertChips(item)}</span></span>
+          <span class="count">${item.experts.length} expert${item.experts.length > 1 ? "s" : ""}</span>
         </div>`).join("");
+    }
 
-      const batchHtml = [0, 1].map(index => {
-        const items = step.batches[index] || [];
+    function renderBatches(step) {
+      return [0, 1].map(index => {
+        const ids = step.batches[index] || [];
+        const ranks = [...new Set(ids.flatMap(id => { const item = flow(id); return [item.src, item.dst]; }))];
         const classes = ["batch", step.conflict === index ? "conflict" : "", step.fit === index ? "fit" : ""].join(" ");
-        const used = [...new Set(items.flatMap(id => { const item = flow(id); return [item.src, item.dst]; }))];
         return `<div class="${classes}">
-          <div class="batch-head"><span>Batch ${index}</span><span>${used.length ? `used: ${used.map(rank => `R${rank}`).join(" ")}` : "empty"}</span></div>
-          <div class="batch-flows">${items.length ? items.map(id => {
+          <div class="batch-head"><span>Batch ${index}</span><span>${ranks.length ? `used: ${ranks.map(rank => `R${rank}`).join(" ")}` : "empty"}</span></div>
+          <div class="batch-flows">${ids.length ? ids.map(id => {
             const item = flow(id);
-            return `<span class="flow-pill ${step.current === id ? "new" : ""}">${id}: R${item.src} → R${item.dst}</span>`;
+            return `<div class="batch-flow ${step.current === id ? "new" : ""}"><strong>${id}: R${item.src} → R${item.dst}</strong><span class="experts">${expertChips(item)}</span></div>`;
           }).join("") : '<span class="empty">No flow yet</span>'}</div>
         </div>`;
       }).join("");
+    }
 
+    function render() {
+      const step = steps[state.step];
+      el.steps.innerHTML = steps.map((item, index) => `<button class="step ${index === state.step ? "active" : index < state.step ? "done" : ""}" data-step="${index}" type="button">${index + 1}. ${item.label}</button>`).join("");
+      el.steps.querySelectorAll(".step").forEach(button => button.addEventListener("click", () => { stop(); setStep(Number(button.dataset.step)); }));
       const statusClass = step.status.includes("Conflict") ? "red" : step.status.includes("Place") ? "green" : "";
       el.canvas.innerHTML = `
-        <div class="two-col">
-          <div class="card"><div class="card-title">Migrations <span>ordered</span></div><div class="card-body flow-list">${flowHtml}</div></div>
-          <div class="card"><div class="card-title">Batches <span>no repeated rank</span></div><div class="card-body batch-board">${batchHtml}</div></div>
+        <div class="workspace">
+          <section class="card"><div class="card-title">Flows <span>experts grouped by rank pair</span></div><div class="card-body flow-list">${renderFlows(step)}</div></section>
+          <section class="card"><div class="card-title">Batches <span>no repeated rank</span></div><div class="card-body batch-board">${renderBatches(step)}</div></section>
         </div>
-        <div class="message"><span><strong>${step.label}.</strong> ${step.text}</span><span class="status ${statusClass}">${step.status}</span></div>`;
+        <div class="message"><span><strong>${step.label}.</strong> ${step.text}</span><span class="status ${statusClass}">${step.status}</span></div>
+        <div class="idea-strip">
+          <div class="idea"><b>Flow:</b> all experts with the same source and destination.</div>
+          <div class="idea"><b>Batch:</b> flows whose rank endpoints do not overlap.</div>
+        </div>`;
+      el.prev.disabled = state.step === 0;
+      el.next.disabled = state.step === steps.length - 1;
+      el.counter.textContent = `${state.step + 1} / ${steps.length}`;
     }
 
-    function topologyHtml() {
-      return `<div class="topology">${[0, 1, 2, 3].map(server => `
-        <div class="server"><b>Server ${server}</b><div class="gpus"><span class="gpu">R${server * 2}</span><span class="gpu">R${server * 2 + 1}</span></div></div>`).join("")}</div>
-        <div class="network-line"><span>slow inter-server network · C = 2.0</span></div>`;
-    }
-
-    function migrationHtml() {
-      return `<div class="migration-grid">${migrations.map(([id, src, dst]) => `<span class="migration">M${id}: R${src}→R${dst}</span>`).join("")}</div>`;
-    }
-
-    function matrixHtml(highlightConflict = false) {
-      const cells = ['<div class="cell head">x</div>', ...[0, 1, 2, 3].map(b => `<div class="cell head">B${b}</div>`)];
-      migrations.forEach(([id]) => {
-        cells.push(`<div class="cell head">M${id}</div>`);
-        [0, 1, 2, 3].forEach(batch => cells.push(`<div class="cell ${assignedBatch[id] === batch ? "on" : ""}">${assignedBatch[id] === batch ? "1" : "0"}</div>`));
-      });
-      return `<div class="matrix ${highlightConflict ? "highlight" : ""}">${cells.join("")}</div>`;
-    }
-
-    function batchResultHtml() {
-      return `<div class="batch-result">${optimalBatches.map((batch, index) => `<div><b>BATCH ${index}</b><span>${batch.map(id => { const item = migrationById[id]; return `M${id}: R${item[1]}→R${item[2]}`; }).join("<br>")}</span></div>`).join("")}</div>`;
-    }
-
-    function renderIlp() {
-      const index = currentStep();
-      if (index === 0) {
-        el.canvas.innerHTML = `<div class="card"><div class="card-title">example_hotspot.json <span>8 migrations · 8 GPUs</span></div><div class="card-body">
-          ${topologyHtml()}
-          <div class="params"><span class="chip">T₀ = 1.0</span><span class="chip">ρ = 0.6</span><span class="chip">C_local = 18</span><span class="chip">C_network = 2</span></div>
-          ${migrationHtml()}
-        </div></div>`;
-      } else if (index === 1) {
-        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">x[p,b] · y[b] · T_infer</div><div class="formula-note">assignment · active batch · predicted inference time</div></div></div>
-          <div class="var-grid">
-            <div class="var-card"><code>x[p,b] ∈ {0,1}</code><p>Migration p is assigned to batch b.</p></div>
-            <div class="var-card"><code>y[b] ∈ {0,1}</code><p>Batch b is active.</p></div>
-            <div class="var-card"><code>T_infer ≥ T₀</code><p>Worst inference time during migration.</p></div>
-          </div>`;
-      } else if (index === 2) {
-        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">Σ_b x[p,b] = 1 &nbsp; · &nbsp; x[p,b] ≤ y[b] &nbsp; · &nbsp; y[b] ≥ y[b+1]</div><div class="formula-note">Assign once · activate its batch · keep active batches contiguous.</div></div></div>${matrixHtml()}`;
-      } else if (index === 3) {
-        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">Σ_{p : r∈p} x[p,b] ≤ 1</div><div class="formula-note">A rank has at most one peer in each batch.</div></div></div>${batchResultHtml()}`;
-      } else if (index === 4) {
-        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">T_infer ≥ T₀ · (1 + L[e,b] / (C[e] · (1−ρ)))</div><div class="formula-note">L[e,b] = Σ_p w[p] · f[p,e] · x[p,b]</div></div></div>
-          <div class="result-grid">
-            <div class="result-card"><h3>Unbatched peak load</h3><div class="metric"><span>Link utilization</span><strong>1.50</strong></div><div class="bar"><i style="width:100%"></i></div></div>
-            <div class="result-card optimal"><h3>ILP peak load</h3><div class="metric"><span>Link utilization</span><strong>0.50</strong></div><div class="bar"><i style="width:33.33%"></i></div></div>
-          </div>`;
-      } else {
-        el.canvas.innerHTML = `<div class="formula-box"><div><div class="formula">min T_infer</div><div class="formula-note">Batch count only breaks ties after inference time is optimal.</div></div></div>
-          <div class="result-grid">
-            <div class="result-card"><h3>Unbatched</h3><div class="metric"><span>Inference time</span><strong>4.75</strong></div><div class="metric"><span>Migration time</span><strong>1.55</strong></div><div class="metric"><span>Batches</span><strong>1</strong></div></div>
-            <div class="result-card optimal"><h3>ILP optimal</h3><div class="metric"><span>Inference time</span><strong>2.25</strong></div><div class="metric"><span>Migration time</span><strong>2.20</strong></div><div class="metric"><span>Batches</span><strong>4</strong></div></div>
-          </div>`;
-      }
+    function setStep(next) {
+      state.step = Math.max(0, Math.min(steps.length - 1, next));
+      render();
     }
 
     function stop() {
@@ -447,57 +320,28 @@
       el.play.classList.remove("playing");
     }
 
-    function setStep(next) {
-      state.steps[state.mode] = Math.max(0, Math.min(stepCount() - 1, next));
-      render();
-    }
-
-    function render() {
-      const index = currentStep();
-      const steps = state.mode === "batching" ? batchingSteps : ilpSteps;
-      el.tabs.forEach(tab => tab.classList.toggle("active", tab.dataset.mode === state.mode));
-      el.title.textContent = state.mode === "batching" ? "Greedy batching" : "ILP model";
-      el.subtitle.textContent = state.mode === "batching" ? "Place each migration into the earliest conflict-free batch." : "Variables, constraints, and one objective.";
-      el.rule.textContent = state.mode === "batching" ? "endpoints(flow) ∩ used(batch) = ∅" : "objective: min T_infer";
-      el.steps.innerHTML = steps.map((item, stepIndex) => `<button class="step-dot ${stepIndex === index ? "active" : stepIndex < index ? "done" : ""}" data-step="${stepIndex}" type="button">${stepIndex + 1}. ${item.label}</button>`).join("");
-      el.steps.querySelectorAll(".step-dot").forEach(button => button.addEventListener("click", () => { stop(); setStep(Number(button.dataset.step)); }));
-      if (state.mode === "batching") renderBatching(); else renderIlp();
-      el.prev.disabled = index === 0;
-      el.next.disabled = index === steps.length - 1;
-      el.counter.textContent = `${index + 1} / ${steps.length}`;
-      el.canvas.style.animation = "none";
-      requestAnimationFrame(() => { el.canvas.style.animation = ""; });
-    }
-
     function togglePlay() {
       if (state.timer) { stop(); return; }
-      if (currentStep() === stepCount() - 1) setStep(0);
+      if (state.step === steps.length - 1) setStep(0);
       state.timer = setInterval(() => {
-        if (currentStep() === stepCount() - 1) stop(); else setStep(currentStep() + 1);
+        if (state.step === steps.length - 1) stop(); else setStep(state.step + 1);
       }, 1500);
       el.play.textContent = "Pause";
       el.play.classList.add("playing");
     }
 
-    el.tabs.forEach(tab => tab.addEventListener("click", () => { stop(); state.mode = tab.dataset.mode; render(); }));
     el.reset.addEventListener("click", () => { stop(); setStep(0); });
-    el.prev.addEventListener("click", () => { stop(); setStep(currentStep() - 1); });
-    el.next.addEventListener("click", () => { stop(); setStep(currentStep() + 1); });
+    el.prev.addEventListener("click", () => { stop(); setStep(state.step - 1); });
+    el.next.addEventListener("click", () => { stop(); setStep(state.step + 1); });
     el.play.addEventListener("click", togglePlay);
     document.addEventListener("keydown", event => {
-      if (event.key === "ArrowLeft") { stop(); setStep(currentStep() - 1); }
-      if (event.key === "ArrowRight") { stop(); setStep(currentStep() + 1); }
+      if (event.key === "ArrowLeft") { stop(); setStep(state.step - 1); }
+      if (event.key === "ArrowRight") { stop(); setStep(state.step + 1); }
       if (event.code === "Space" && event.target.tagName !== "BUTTON") { event.preventDefault(); togglePlay(); }
     });
 
-    const query = new URLSearchParams(window.location.search);
-    if (query.get("mode") === "ilp") state.mode = "ilp";
-    if (query.has("step")) {
-      const requestedStep = Number(query.get("step"));
-      if (Number.isInteger(requestedStep)) {
-        state.steps[state.mode] = Math.max(0, Math.min(stepCount() - 1, requestedStep));
-      }
-    }
+    const queryStep = Number(new URLSearchParams(window.location.search).get("step"));
+    if (Number.isInteger(queryStep)) state.step = Math.max(0, Math.min(steps.length - 1, queryStep));
     render();
   </script>
 </body>
