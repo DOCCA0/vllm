@@ -682,10 +682,11 @@ def _mermaid_label(text: str) -> str:
 
 def build_before_mermaid_diagram(instructions: list[MigrationInstruction]) -> str:
     lines = [
-        "flowchart LR",
+        '%%{init: {"flowchart": {"nodeSpacing": 12, "rankSpacing": 30}}}%%',
+        "flowchart TB",
         "  classDef rank fill:#eef5ff,stroke:#275d9f,stroke-width:2px;",
         "  subgraph BEFORE[Before: planned expert transfers]",
-        "    direction LR",
+        "    direction TB",
     ]
     ranks = sorted(
         {inst.src_rank for inst in instructions}
@@ -693,12 +694,12 @@ def build_before_mermaid_diagram(instructions: list[MigrationInstruction]) -> st
     )
     for rank in ranks:
         node = _mermaid_id("before", "rank", rank)
-        lines.append(f'    {node}["Rank {rank}"]')
+        lines.append(f'    {node}["R{rank}"]')
         lines.append(f"    class {node} rank")
     for inst in instructions:
         src_node = _mermaid_id("before", "rank", inst.src_rank)
         dst_node = _mermaid_id("before", "rank", inst.dst_rank)
-        label = _mermaid_label(_expert_label(inst))
+        label = f"E{inst.expert}" if inst.expert is not None else "migration"
         lines.append(f'    {src_node} -->|"{label}"| {dst_node}')
     lines.append("  end")
     return "\n".join(lines) + "\n"

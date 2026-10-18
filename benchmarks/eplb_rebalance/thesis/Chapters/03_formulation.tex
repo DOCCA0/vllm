@@ -150,17 +150,24 @@ cluster.
 
 \begin{figure}[p]
   \centering
-  \begin{subfigure}[t]{0.48\textwidth}
+  \begin{subfigure}[t]{0.31\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{example_hotspot_links.png}
+    \caption{Two-tier routed-link topology.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.31\textwidth}
     \centering
     \includegraphics[width=\linewidth]{example_hotspot_before.png}
     \caption{All migrations issued together.}
   \end{subfigure}\hfill
-  \begin{subfigure}[t]{0.48\textwidth}
+  \begin{subfigure}[t]{0.31\textwidth}
     \centering
     \includegraphics[width=\linewidth]{example_hotspot_after.png}
     \caption{ILP schedule split into batches.}
   \end{subfigure}
-  \caption{Illustrative hotspot before and after contention-aware scheduling.}
+  \caption{Illustrative hotspot topology and migration schedules before and
+  after contention-aware batching. The unbatched diagram remains a directed
+  rank graph; only its layout is vertical.}
   \label{fig:ilp-before-after}
 \end{figure}
 
