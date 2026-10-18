@@ -1,0 +1,138 @@
+\section{Motivation}
+
+Large language model serving is a systems problem as much as a model problem.
+An online service must keep expensive accelerators occupied, admit requests
+with different prompt and generation lengths, manage a dynamically growing
+key--value cache, and coordinate communication across devices. vLLM addresses
+several of these concerns through continuous batching and PagedAttention
+\cite{kwon2023vllm}. The adoption of sparse \gls{moe} models introduces a
+further challenge: the compute and communication performed for a token depend
+on which experts the router selects.
+
+An MoE layer contains many feed-forward expert networks but activates only a
+small subset for each token. This conditional computation increases model
+capacity without making the arithmetic cost proportional to the total number
+of parameters \cite{shazeer2017moe,fedus2021switch}. It also makes the runtime
+load data dependent. Tokens in a batch do not necessarily select experts
+uniformly, and the popularity distribution can shift as the request mix
+changes. When experts are sharded across devices with \gls{ep}, an overloaded
+expert becomes an overloaded rank. Faster ranks then wait at collective
+communication boundaries, so one local imbalance can reduce cluster-wide
+throughput.
+
+\gls{eplb} mitigates this problem by observing expert usage and periodically
+computing a new physical placement. Popular experts can be replicated and the
+mapping between logical experts and physical slots can be changed. Applying a
+new placement, however, requires copying expert weights between ranks. These
+objects are much larger than control messages and the transfers use the same
+host and network resources as foreground inference. This thesis focuses on a
+specific but consequential phase of EPLB: scheduling those expert migrations.
+
+The original execution path posts the point-to-point operations for a layer as
+one group. This minimizes the number of explicit communication rounds, which
+is attractive if migration completion time is the only objective. During
+asynchronous EPLB, however, inference does not stop. A rank that simultaneously
+sends to and receives from several peers can create a short traffic burst at
+its network interface. The burst may compete with token dispatch, result
+collection, tensor-parallel communication, or other inference-related traffic.
+Thus, the schedule that completes migration soonest is not necessarily the
+schedule that gives users the best latency while migration is in progress.
+
+The distinction is especially important in a multi-node deployment whose
+network is slower than local accelerator memory. Expert migration is a
+background maintenance operation; the foreground objective is serving quality.
+The central hypothesis of this work is therefore:
+
+\begin{quote}
+Limiting the number of simultaneous migration peers per rank can reduce network
+bursts enough to improve foreground serving, even when doing so introduces
+additional migration rounds.
+\end{quote}
+
+\section{Research questions}
+
+The thesis is organized around four research questions.
+
+\begin{enumerate}[label=\textbf{RQ\arabic*:},leftmargin=2.2cm]
+  \item \textbf{How should expert migration contention be represented?}
+  A useful model must distinguish expert count, source and destination ranks,
+  network paths, and link capacities while remaining simple enough to explain
+  the scheduler's behavior.
+
+  \item \textbf{What scheduling rule is suitable for the online path?}
+  An exact optimizer is valuable as a design tool, but a production scheduler
+  must be deterministic, fast, dependency-light, and compatible with the
+  existing replicated placement maps.
+
+  \item \textbf{Can the implementation preserve EPLB semantics?}
+  Batching must move every required expert exactly once, retain local-copy and
+  replica semantics, respect the communicator lifecycle, and leave the legacy
+  path unchanged unless the feature is explicitly enabled.
+
+  \item \textbf{Does reduced migration contention improve serving?}
+  The answer requires both user-visible metrics and direct network evidence.
+  Throughput, \gls{ttft}, \gls{tpot}, and end-to-end latency are measured
+  together with one-second NIC byte counters and scheduler profiling.
+\end{enumerate}
+
+\section{Contributions}
+
+This work makes the following contributions.
+
+\begin{itemize}
+  \item It separates two objectives that can otherwise be conflated: minimizing
+  migration completion time and minimizing the interference experienced by
+  concurrent inference.
+
+  \item It formulates contention-aware migration scheduling as an \gls{ilp}.
+  The model assigns coalesced directed rank-pair flows to batches, constrains
+  each rank to one incident flow per batch, estimates routed link load, and
+  minimizes the worst modeled inference time. This is an exact optimum only
+  within the hard rank-disjoint-flow policy and the stated linear model. An illustrative
+  eight-rank topology exposes the trade-off rather than claiming a calibrated
+  latency predictor or proving that rank-disjoint scheduling is universally best.
+
+  \item It designs a production-oriented greedy scheduler. The problem is
+  reduced to deterministic first-fit edge coloring of a communication graph.
+  Multiple experts with the same directed source--destination pair are
+  coalesced, independent rank pairs can progress concurrently, and every rank
+  participates in at most one directed flow in a batch.
+
+  \item It integrates the scheduler into asynchronous vLLM EPLB. Scheduling
+  for all 48 MoE layers is invoked once per rebalance cycle, while transfers
+  remain layer by layer. The feature is opt-in and synchronous EPLB retains the
+  original path because inference is already paused in that mode.
+
+  \item It evaluates the complete serving system and profiles the scheduler.
+  The final contribution was reviewed and merged into upstream vLLM as pull
+  request \prnumber\ \cite{vllmpr52641}.
+\end{itemize}
+
+\section{Scope and claims}
+
+The evaluation is deliberately narrow enough to be reproducible. It uses one
+four-node cluster, one model, one communication backend, one workload shape,
+and one A/B run per condition. This supports a case study and an engineering
+validation, not a universal performance claim. The experiment establishes
+that the proposed mechanism works and is beneficial under the measured
+configuration. It does not establish how the effect scales to modern
+datacenter GPUs, RDMA fabrics, different expert sizes, or more ranks.
+
+The thesis also distinguishes artifacts by purpose. The ILP is an offline
+analytical baseline. The greedy algorithm is the deployed scheduler. Older
+experiments created during design iteration are not used for the final result;
+all reported E2E values come from one archived A/B directory, and all scheduler
+costs come from a separate archived profiling directory. This provenance is
+specified in \cref{ch:methodology} and the appendices.
+
+\section{Thesis structure}
+
+\Cref{ch:background} introduces sparse MoE inference, expert parallelism,
+vLLM EPLB, asynchronous migration, and the relevant network and measurement
+concepts. \Cref{ch:formulation} defines the migration graph and develops the
+ILP model. \Cref{ch:design} presents the greedy scheduler, its invariants,
+complexity, and vLLM integration. \Cref{ch:methodology} documents the hardware,
+software, workload, metrics, and experimental controls. \Cref{ch:results}
+reports E2E, NIC, and profiling results, then discusses validity and
+limitations. Finally, \cref{ch:conclusions} summarizes the findings and
+outlines future work.

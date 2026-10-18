@@ -1,0 +1,260 @@
+% MSc thesis based on the PoliMi School of Industrial and Information
+% Engineering template. Build from this directory with: latexmk -pdf Thesis.tex
+\documentclass{Configuration_Files/PoliMi3i_thesis}
+
+\usepackage{parskip}
+\usepackage{setspace}
+\usepackage{emptypage}
+\usepackage{multicol}
+\setlength\columnsep{15pt}
+\setlength\parindent{10pt}
+\raggedbottom
+
+\usepackage{titlesec}
+\titlespacing{\section}{0pt}{3.3ex}{2ex}
+\titlespacing{\subsection}{0pt}{3.3ex}{1.65ex}
+\titlespacing{\subsubsection}{0pt}{3.3ex}{1ex}
+
+\usepackage[english]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[11pt]{moresize}
+\usepackage{microtype}
+
+\usepackage{graphicx}
+\usepackage{svg}
+\usepackage{transparent}
+\usepackage{eso-pic}
+\usepackage[export]{adjustbox}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds}
+\graphicspath{{./Images/}{../ILP/}{../results/serving_nixl_20260911_async_random500/}{../results/serving_nixl_20260911_async_random500_profile/}}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{amsthm,thmtools}
+\usepackage{float}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{bm}
+\usepackage[overload]{empheq}
+\usepackage{fix-cm}
+
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{colortbl}
+\usepackage{booktabs}
+\usepackage{multirow}
+
+\usepackage{listings}
+\newfloat{algorithm}{tbp}{loa}[chapter]
+\floatname{algorithm}{Algorithm}
+\lstdefinestyle{code}{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false
+}
+
+\usepackage[colorlinks=true,linkcolor=black,anchorcolor=black,citecolor=black,
+  filecolor=black,menucolor=black,runcolor=black,urlcolor=bluepoli]{hyperref}
+\hypersetup{
+  pdftitle={Contention-Aware Expert Migration for Dynamic Load Balancing in
+    Mixture-of-Experts Serving},
+  pdfauthor={WU CAO},
+  pdfsubject={Master's thesis in High Performance Computing Engineering},
+  pdfkeywords={mixture of experts, expert parallelism, EPLB, expert migration,
+    network contention, vLLM, NIXL}
+}
+\usepackage{cleveref}
+\usepackage[square,numbers,sort&compress]{natbib}
+\bibliographystyle{abbrvnat}
+
+\usepackage{pdfpages}
+\usepackage{afterpage}
+\usepackage{fancyhdr}
+\usepackage{fancyvrb}
+\usepackage[acronym,nomain]{glossaries}
+\usepackage{enumitem}
+\fancyhf{}
+
+\input{Configuration_Files/config}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\SI}[2]{#1\,#2}
+\newcommand{\system}{contention-aware migration batching}
+\newcommand{\prnumber}{\#52641}
+
+\input{Thesis_Acronyms}
+
+\begin{document}
+
+\fancypagestyle{plain}{%
+  \fancyhf{}
+  \fancyhead[RO,RE]{\thepage}
+  \renewcommand{\headrulewidth}{0pt}
+  \renewcommand{\footrulewidth}{0pt}}
+
+\pagestyle{empty}
+\frontmatter
+
+\puttitle{
+  title=Contention-Aware Expert Migration for Dynamic Load Balancing in Mixture-of-Experts Serving,
+  name=WU CAO,
+  course=High Performance Computing Engineering \\ Ingegneria del Calcolo ad Alte Prestazioni,
+  ID=11036000,
+  advisor=Prof. Massimo Tornatore,
+  coadvisor={Assistant Prof. Qiaolun Zhang},
+  academicyear={2026--2027},
+}
+
+\startpreamble
+\setcounter{page}{1}
+
+\chapter*{Abstract}
+Mixture-of-Experts (MoE) language models increase parameter capacity while
+activating only a subset of experts for each token. At inference time, expert
+parallelism distributes those experts across accelerators. The resulting load
+is input dependent: a small group of experts can become disproportionately
+popular, leaving some ranks overloaded while others are underutilized. Expert
+Parallel Load Balancing (EPLB) addresses this imbalance by periodically
+changing expert placement and migrating expert weights. In asynchronous EPLB,
+inference continues during migration; consequently, migration traffic and
+latency-sensitive inference traffic share the same network resources.
+
+This thesis studies the network interference created when many point-to-point
+expert migrations are submitted simultaneously. It first formulates migration
+scheduling as an integer linear program (ILP) that minimizes the worst modeled
+inference time under link contention, subject to a hard rank-disjoint-flow
+constraint. The formulation exposes the central
+trade-off: spreading transfers over several batches reduces peak link load but
+can lengthen the migration itself. Based on this insight, a lightweight online
+scheduler is designed for vLLM. Expert transfers are represented as a rank
+communication multigraph, coalesced by directed rank pair, and greedily grouped
+into batches in which every rank participates in at most one directed flow.
+Schedules for all MoE layers are prepared once per rebalance cycle, while
+weight transfer and activation remain layer by layer. The implementation is opt-in, applies
+only to asynchronous EPLB, preserves the original synchronous path, and was
+merged upstream in vLLM pull request \prnumber.
+
+The system is evaluated on four nodes connected by \SI{10}{Gb/s} Ethernet,
+each with one Quadro RTX 6000 GPU, using Qwen3-30B-A3B-Instruct-2507, Ray,
+and the NIXL communication backend. In a controlled 500-request A/B benchmark,
+batching increased output throughput by 2.28\%, reduced median and P99
+time-per-output-token by 1.94\% and 0.87\%, and reduced median and P99
+end-to-end latency by 3.18\% and 1.50\%. P99 aggregate NIC traffic on the head
+node decreased by 10.24\%. NVTX-only Nsight Systems traces measured 34
+cycle-wide scheduler invocations per rank; the largest cumulative scheduling
+cost was \SI{302.081}{ms}, equal to 0.285\% of the \SI{105.932}{s} serving-time
+reduction observed in the independent A/B run. These measurements show that,
+for the evaluated configuration, conservative rank-disjoint batching can trade
+a small amount of CPU scheduling work and migration serialization for lower
+network bursts and improved serving performance.
+
+\textbf{Keywords:} mixture of experts, expert parallelism, load balancing,
+expert migration, network contention, vLLM, NIXL
+
+\chapter*{Abstract in lingua italiana}
+I modelli linguistici Mixture-of-Experts (MoE) aumentano la capacità in termini
+di parametri attivando, per ciascun token, solo un sottoinsieme degli esperti.
+Durante l'inferenza, l'expert parallelism distribuisce tali esperti tra più
+acceleratori. Il carico risultante dipende dall'input: alcuni esperti possono
+diventare molto più richiesti di altri, sovraccaricando determinati rank e
+lasciandone altri sottoutilizzati. L'Expert Parallel Load Balancing (EPLB)
+riduce questo squilibrio modificando periodicamente il posizionamento degli
+esperti e migrandone i pesi. Nella modalità asincrona, l'inferenza continua
+durante la migrazione; il traffico di migrazione e quello dell'inferenza
+condividono quindi le stesse risorse di rete.
+
+Questa tesi analizza l'interferenza di rete causata dall'invio simultaneo di
+molte migrazioni punto-punto. Il problema viene inizialmente formulato come un
+programma lineare intero (ILP), con l'obiettivo di minimizzare il peggior tempo
+di inferenza modellato in presenza di contesa sui link. La formulazione mette
+in evidenza il compromesso fondamentale: distribuire i trasferimenti su più
+batch riduce il picco di traffico, ma può aumentare la durata complessiva della
+migrazione. Sulla base di questa osservazione è stato progettato uno scheduler
+online leggero per vLLM. I trasferimenti sono rappresentati come un multigrafo
+di comunicazione tra rank, aggregati per coppia diretta e raggruppati con un
+algoritmo greedy in batch nei quali ogni rank partecipa al massimo a un flusso
+diretto.
+Gli schedule di tutti i layer MoE sono calcolati una sola volta per ciclo di
+riequilibrio, mentre il trasferimento e l'attivazione restano sequenziali per
+layer. L'implementazione è opzionale, riguarda esclusivamente EPLB asincrono e
+mantiene invariato il percorso sincrono; è stata integrata upstream in vLLM
+tramite la pull request \prnumber.
+
+La valutazione usa quattro nodi connessi tramite Ethernet a \SI{10}{Gb/s},
+ciascuno dotato di una GPU Quadro RTX 6000, con il modello
+Qwen3-30B-A3B-Instruct-2507, Ray e il backend NIXL. In un benchmark A/B
+controllato di 500 richieste, il batching aumenta il throughput di output del
+2.28\%, riduce il tempo per token di output P50/P99 dell'1.94\%/0.87\% e la
+latenza end-to-end P50/P99 del 3.18\%/1.50\%. Il P99 del traffico NIC aggregato
+sul nodo principale diminuisce del 10.24\%. Le tracce NVTX raccolte con Nsight
+Systems misurano 34 invocazioni dello scheduler per rank; il costo cumulativo
+massimo è \SI{302.081}{ms}, pari allo 0.285\% dei \SI{105.932}{s} risparmiati
+nel benchmark A/B indipendente. Per la configurazione studiata, i risultati
+mostrano che un batching conservativo e privo di conflitti tra rank può ridurre
+i picchi di rete e migliorare le prestazioni di serving con un costo CPU
+contenuto.
+
+\textbf{Parole chiave:} mixture of experts, expert parallelism, bilanciamento
+del carico, migrazione degli esperti, contesa di rete, vLLM, NIXL
+
+\thispagestyle{empty}
+\tableofcontents
+\thispagestyle{empty}
+\cleardoublepage
+
+\addtocontents{toc}{\vspace{2em}}
+\mainmatter
+
+\chapter{Introduction}
+\input{Chapters/01_introduction}
+
+\chapter{Background and Related Work}
+\input{Chapters/02_background}
+
+\chapter{Problem Formulation}
+\input{Chapters/03_formulation}
+
+\chapter{Design and Implementation}
+\input{Chapters/04_design}
+
+\chapter{Experimental Methodology}
+\input{Chapters/05_methodology}
+
+\chapter{Results and Discussion}
+\input{Chapters/06_results}
+
+\chapter{Conclusions and Future Work}
+\input{Chapters/07_conclusions}
+
+\addtocontents{toc}{\vspace{2em}}
+\bibliography{Thesis_bibliography}
+
+\cleardoublepage
+\addtocontents{toc}{\vspace{2em}}
+\appendix
+\chapter{Reproduction Commands}
+\input{Chapters/appendix_commands}
+
+\chapter{Metric Definitions and Supplementary Results}
+\input{Chapters/appendix_metrics}
+
+\printglossary[type=\acronymtype]
+\listoffigures
+\listoftables
+
+\chapter*{Acknowledgements}
+I would like to thank my advisor, Prof. Massimo Tornatore, and my co-advisor,
+Assistant Prof. Qiaolun Zhang, for their professional support and guidance
+throughout this work. I also thank the vLLM maintainers and reviewers whose
+detailed feedback helped turn an experimental idea into a robust upstream
+contribution.
+
+\cleardoublepage
+\end{document}

@@ -1,0 +1,186 @@
+\label{ch:background}
+
+\section{Autoregressive language-model serving}
+
+An autoregressive language model generates one token at a time. Serving a
+request normally has two computational phases. During \emph{prefill}, the
+model processes the prompt and constructs the key--value cache. During
+\emph{decode}, the service repeatedly executes the model to produce one or a
+small number of new tokens. Prefill has substantial parallel work over prompt
+tokens, whereas decode is iterative and often sensitive to memory access,
+scheduling delay, and interference.
+
+Modern serving engines batch requests whose sequences are at different
+positions. vLLM introduced PagedAttention to reduce fragmentation and enable
+flexible sharing of KV-cache blocks, thereby increasing the number of requests
+that can be served concurrently \cite{kwon2023vllm}. Continuous batching makes
+resource utilization higher, but also means that a background operation may
+affect multiple requests in different phases at the same time.
+
+Four metrics are central in this thesis. Output throughput is the number of
+generated tokens per second over the measured interval. \gls{ttft} is the time
+from request submission until its first output token, so it includes admission,
+queueing, and prefill. \gls{tpot} averages the gaps between output tokens after
+the first token and is primarily associated with decode. End-to-end latency
+measures the complete request. Reporting both median and P99 values separates
+typical behavior from tail behavior. Precise definitions are given in
+\cref{app:metrics}.
+
+\section{Sparse mixture-of-experts models}
+
+The sparsely gated MoE layer was developed as a practical form of conditional
+computation \cite{shazeer2017moe}. Let $x$ denote a token representation,
+$E_i$ the $i$th expert, and $g_i(x)$ a router weight. A simplified MoE output is
+
+\begin{equation}
+  y(x)=\sum_{i\in\operatorname{TopK}(g(x))} g_i(x) E_i(x).
+\end{equation}
+
+Only the selected experts execute for $x$. This decouples total parameter
+capacity from active arithmetic. GShard demonstrated large-scale conditional
+computation with automatic sharding \cite{lepikhin2020gshard}; Switch
+Transformer simplified routing to one expert per token and highlighted both
+the scaling opportunity and the communication and load-balancing challenges
+\cite{fedus2021switch}. Recent open models continue this direction. Qwen3
+includes dense and MoE variants \cite{yang2025qwen3}, while DeepSeek-V3 uses a
+large sparse architecture and an auxiliary-loss-free training-time balancing
+strategy \cite{deepseek2024v3}.
+
+The evaluated Qwen3-30B-A3B-Instruct-2507 checkpoint has 30.5 billion total
+parameters, approximately 3.3 billion activated parameters, 48 layers, 128
+experts, and eight selected experts per token \cite{qwen3modelcard}. The gap
+between total and active parameters makes it a useful serving model: compute
+is sparse, but expert weights remain substantial objects that must be placed
+and occasionally copied.
+
+\section{Expert parallelism}
+
+In \gls{ep}, experts are distributed across ranks. A token is dispatched to
+the ranks holding its selected experts; expert outputs are then returned to
+the rank that continues the model computation. EP avoids replicating every
+expert on every device, but introduces all-to-all-style communication and a
+dependence on balanced rank workloads.
+
+Let $a_{l,e}$ be the number of token assignments to logical expert $e$ in layer
+$l$ over an observation window. If rank $r$ hosts a set $H_{l,r}$, a simple
+load estimate is
+
+\begin{equation}
+  L_{l,r}=\sum_{e\in H_{l,r}} a_{l,e}.
+\end{equation}
+
+Even if training encourages globally balanced routing, a finite serving window
+can be skewed. Request language, task, domain, and generation state can all
+change which experts are selected. Moreover, the system cares about load per
+physical rank, not only load per logical expert. Several moderately popular
+experts placed together can overload a rank.
+
+\section{Expert Parallel Load Balancing in vLLM}
+
+vLLM's EPLB records expert usage over a configurable window and periodically
+computes a new placement. Redundant experts add physical slots beyond the
+number required for one copy of each logical expert. The balancer can use those
+slots to replicate hot experts and distribute their assignments. vLLM exposes
+the observation window, rebalance interval, redundancy, asynchronous mode,
+policy, and migration communicator through \code{EPLBConfig}
+\cite{vllmeplbdocs}.
+
+Placement is represented by replicated logical-to-physical and
+physical-to-logical mappings for every MoE layer. Once a new map is available,
+each rank can independently derive which logical experts it loses, keeps, or
+gains. Local rearrangements copy weights between slots on the same rank.
+Remote gains require a source rank that already owns the logical expert and a
+point-to-point weight transfer.
+
+Synchronous and asynchronous EPLB have different performance objectives. A
+synchronous rearrangement pauses inference. In that setting, extra sequential
+communication rounds directly extend the pause, so quickly completing the
+migration is the natural goal. Asynchronous EPLB moves experts in a background
+worker while inference continues. It transfers one layer and coordinates its
+activation with forward progress before proceeding. Here, the migration has
+more time, but interference with foreground work matters. This thesis changes
+only the asynchronous path and retains the synchronous behavior.
+
+\begin{figure}[t]
+  \centering
+  \begin{tikzpicture}[
+    node distance=9mm and 11mm,
+    box/.style={draw,rounded corners,align=center,minimum width=31mm,minimum height=10mm},
+    arr/.style={-{Latex[length=2mm]},thick}
+  ]
+    \node[box] (metrics) {Per-layer expert\\usage window};
+    \node[box,right=of metrics] (placement) {EPLB policy\\new placement};
+    \node[box,right=of placement] (schedule) {Migration\\schedule};
+    \node[box,below=of schedule] (transfer) {Background layer\\transfer};
+    \node[box,left=of transfer] (activate) {Mapping swap at\\safe boundary};
+    \node[box,left=of activate] (serve) {Foreground\\inference};
+    \draw[arr] (metrics) -- (placement);
+    \draw[arr] (placement) -- (schedule);
+    \draw[arr] (schedule) -- (transfer);
+    \draw[arr] (transfer) -- (activate);
+    \draw[arr] (activate) -- (serve);
+    \draw[arr] (serve) -- (metrics);
+    \draw[arr,dashed] (serve) -- node[below,sloped]{shared network resources} (transfer);
+  \end{tikzpicture}
+  \caption{Simplified asynchronous EPLB control loop. The contribution of this
+  thesis is the migration-scheduling block and its execution path.}
+  \label{fig:eplb-loop}
+\end{figure}
+
+\section{NIXL communication}
+
+\gls{nixl} provides a transfer abstraction for distributed inference across
+heterogeneous memory and storage. A transfer agent manages registered memory,
+remote metadata, backend selection, and asynchronous point-to-point requests
+\cite{nixlguide}. vLLM supports NIXL as an EPLB communicator and can also use
+Gloo or other backends depending on mode and configuration
+\cite{vllmconfigdocs}.
+
+The final evaluation explicitly selects NIXL. This choice matters for both
+performance and correctness. In the implementation evaluated here,
+\code{execute()} drains the queued transfer operations and clears the transfer
+context. Consequently, every migration batch must restore the layer context,
+post only that batch's sends and receives, and call \code{execute()}. Moving
+the call outside the loop would collapse the batch boundaries and defeat the
+scheduler's concurrency constraint.
+
+\section{Scheduling as graph coloring}
+
+A migration layer can be represented by a graph whose vertices are ranks and
+whose directed edges are remote flows. If each rank may participate in at most
+one flow in a batch, edges sharing an endpoint cannot receive the same batch
+identifier. This is an edge-coloring constraint \cite{west2001graph}. Transfer
+direction and expert identity are still required for execution, but direction
+does not change whether two operations contend at a rank.
+
+Exact edge coloring is not the whole systems objective: link topology,
+different transfer sizes, replica choices, and foreground traffic can matter.
+Nevertheless, the graph abstraction gives a conservative, topology-independent
+rule. A matching is a set of edges with no shared endpoints; each produced
+batch is therefore a matching. Greedy first-fit coloring is inexpensive and
+deterministic, making it suitable for a control path that runs repeatedly.
+
+\section{Positioning relative to prior work}
+
+Most MoE literature treats balance at training time, routing time, or expert
+placement time. Load-balancing losses and bias updates aim to prevent router
+collapse \cite{fedus2021switch,wang2024lossfree}. EP systems optimize token
+dispatch and expert placement. This work begins after EPLB has already chosen
+a valid new placement. It does not change router probabilities, model outputs,
+or the placement objective. Instead, it schedules the physical copying needed
+to realize that placement.
+
+This separation is useful operationally. A placement algorithm may decide
+\emph{what} state should move, while a migration scheduler decides \emph{when}
+independent transfers should share the network. The feature is therefore
+complementary to improvements in placement quality and communicator speed. Its
+goal is not to reduce migration bytes, but to reshape their concurrency over
+time.
+
+The conservative greedy batching rule is inspired by the migration grouping
+used in OmniInfer's placement manager \cite{omniinferplacement}. This thesis
+does not claim the underlying rank-disjoint heuristic as a new graph
+algorithm. Its contribution is the formulation of the interference objective
+and the adaptation of that rule to vLLM's asynchronous EPLB path, including
+deterministic flow construction, NIXL lifecycle handling, cycle-wide schedule
+precomputation, correctness tests, and end-to-end serving evaluation.

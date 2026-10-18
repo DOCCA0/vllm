@@ -1,0 +1,83 @@
+\label{app:metrics}
+
+\section{Latency definitions}
+
+For request $j$, let $a_j$ be its submission time, $f_j$ the arrival time of
+its first output token, $z_j$ the completion time, and $o_j$ its number of
+output tokens. Then
+
+\begin{align}
+  \mathrm{TTFT}_j &= f_j-a_j,\\
+  \mathrm{E2E}_j &= z_j-a_j,\\
+  \mathrm{TPOT}_j &= \frac{z_j-f_j}{o_j-1}, \qquad o_j>1.
+\end{align}
+
+TTFT includes waiting and prefill; it is not a pure GPU prefill-kernel time.
+TPOT is an average over post-first-token intervals for one request. E2E includes
+all queueing, prefill, decoding, and response completion observed by the client.
+
+\section{Complete improvement table}
+
+\begin{table}[H]
+  \centering
+  \caption{Final clean A/B values and descriptive relative improvements.}
+  \label{tab:complete-improvement}
+  \begin{tabular}{lrrr}
+    \toprule
+    Metric & Batching off & Batching on & Improvement \\
+    \midrule
+    Request throughput (req/s) & 0.105128 & 0.107523 & 2.278\% \\
+    Output throughput (tok/s) & 31.5385 & 32.2569 & 2.278\% \\
+    TTFT P50 (ms) & 49180.71 & 48599.04 & 1.183\% \\
+    TTFT P99 (ms) & 75740.25 & 74756.17 & 1.299\% \\
+    TPOT P50 (ms) & 828.527 & 812.439 & 1.942\% \\
+    TPOT P99 (ms) & 1007.821 & 999.006 & 0.875\% \\
+    E2E P50 (ms) & 303462.69 & 293821.76 & 3.177\% \\
+    E2E P99 (ms) & 322184.88 & 317351.61 & 1.500\% \\
+    Head NIC P99 (MB/s) & 599.814 & 538.398 & 10.239\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Request throughput and output throughput have the same relative improvement
+because every completed request contains exactly 300 generated tokens. They
+are shown separately here for traceability to the raw benchmark output, but
+the main discussion reports only output throughput.
+
+\section{Artifact map}
+
+\begin{longtable}{p{0.38\textwidth}p{0.56\textwidth}}
+  \caption{Final artifact locations relative to
+  \code{benchmarks/eplb\_rebalance}.}\\
+  \toprule
+  Path & Purpose \\
+  \midrule
+  \endfirsthead
+  \toprule
+  Path & Purpose \\
+  \midrule
+  \endhead
+  \path{results/serving_nixl_20260911_async_random500/} &
+  Clean E2E A/B root. \\
+  \path{random_async_off/bench.json} &
+  Unmodified benchmark output with batching disabled. \\
+  \path{random_async_on/bench.json} &
+  Unmodified benchmark output with batching enabled. \\
+  \path{random_async_off/nic.tsv} and \path{random_async_on/nic.tsv} &
+  One-second head-node RX and TX counter samples. \\
+  \path{e2e_summary.csv}, \path{nic_summary.csv} &
+  Derived values used by tables and plots. \\
+  \path{results/serving_nixl_20260911_async_random500_profile/} &
+  Profiling run root. \\
+  \path{trace/rank0.nsys-rep} through \path{rank3.nsys-rep} &
+  NVTX-only Nsight reports, one per rank. \\
+  \path{profile_summary.csv} &
+  Extracted scheduler call count, percentiles, and cumulative cost. \\
+  \path{COMMANDS.md} &
+  Exact profiling commands and trace interpretation. \\
+  \bottomrule
+\end{longtable}
+
+Intermediate experiment directories are intentionally absent from this map.
+They were useful during development but are not data sources for the final
+thesis results.

@@ -1,0 +1,67 @@
+\label{ch:conclusions}
+
+This thesis investigated a narrow systems problem created by dynamic expert
+placement: how to migrate expert weights without allowing background network
+traffic to interfere unnecessarily with ongoing inference. The key conceptual
+step was to distinguish migration completion time from foreground serving
+quality. In synchronous EPLB, finishing the migration quickly is appropriate
+because inference is paused. In asynchronous EPLB, inference and migration
+share resources, so lower peak contention can be worth additional transfer
+rounds.
+
+An offline ILP formalized this trade-off using flow-to-batch assignments,
+rank-degree constraints, routed link load, and a worst-case inference-time
+surrogate. It computes a constrained optimum after imposing the same
+rank-disjoint-flow policy as the deployed design; it does not establish that
+this concurrency limit is universally optimal. In an illustrative hotspot, the
+constrained schedule reduced normalized
+peak utilization from 1.5 to 0.5 and modeled inference time from 4.75 to 2.25,
+while increasing estimated migration time from 1.55 to 2.20. The purpose of the
+model was explanatory: it established that the apparent contradiction between
+``more batches'' and ``faster serving'' disappears when the objectives are
+separated.
+
+The deployed scheduler translates that insight into deterministic first-fit
+edge coloring. Remote migrations are coalesced by ordered rank pair, and every
+batch forms a matching in the rank communication graph. Independent pairs
+retain concurrency, but no rank participates in multiple directed flows within
+a batch.
+All layer schedules are constructed in one cycle-wide CPU call, while expert
+weights remain transferred and activated layer by layer. The implementation is
+opt-in, async-only, and preserves the legacy path as a safe fallback.
+
+On the evaluated four-node vLLM system, enabling batching improved output
+throughput by 2.28\%, reduced TTFT P50/P99 by 1.18\%/1.30\%, reduced TPOT
+P50/P99 by 1.94\%/0.87\%, and reduced E2E P50/P99 by 3.18\%/1.50\%. Head-node
+NIC P99 fell by 10.24\%. Profiling measured 34 scheduling calls for all 48
+layers per rank, with \SI{302.081}{ms} as the largest cumulative rank cost.
+That cost was 0.285\% of the independently observed \SI{105.932}{s} serving-time
+reduction. The code was merged upstream into vLLM in pull request \prnumber.
+
+The work also has clear limitations. It reports a single A/B pair on one
+cluster, uses a synthetic random workload, samples NIC traffic on only the head
+node, and evaluates one migration backend. Accordingly, the result is an
+engineering case study rather than a universal throughput claim.
+
+Several extensions follow naturally:
+
+\begin{itemize}
+  \item repeat and randomize A/B runs on server-class GPUs and RDMA networks,
+  reporting confidence intervals and per-node network counters;
+  \item relax the one-flow-per-rank limit using observed foreground load or
+  available bandwidth rather than fixing it statically;
+  \item incorporate topology, heterogeneous expert sizes, and multiple NICs
+  while retaining a deterministic fallback;
+  \item evaluate synchronization semantics and benefit across every supported
+  communicator backend;
+  \item coordinate placement and migration scheduling so a placement policy can
+  account for reconfiguration cost without coupling model routing to a complex
+  online optimizer; and
+  \item expose migration progress and interference metrics for automatic
+  operator tuning.
+\end{itemize}
+
+The broader lesson is that online model reconfiguration should be evaluated as
+part of serving, not as an isolated data-transfer benchmark. A migration that
+finishes later can still be the better systems choice when it protects the
+latency and throughput of user requests.

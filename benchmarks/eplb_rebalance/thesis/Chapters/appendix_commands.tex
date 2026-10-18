@@ -1,0 +1,80 @@
+\label{app:commands}
+
+This appendix records the essential final commands. The archived
+\code{COMMANDS.md} files remain the authoritative machine-readable source.
+
+\section{Environment and server}
+
+\begin{lstlisting}[style=code,language=bash]
+export NCCL_IB_DISABLE=1 NCCL_SOCKET_FAMILY=AF_INET
+export NCCL_SOCKET_IFNAME=eno2 GLOO_SOCKET_IFNAME=eno2
+export UCX_TLS=all UCX_NET_DEVICES=eno2
+export UCX_RCACHE_MAX_UNRELEASED=1024
+export VLLM_EPLB_LOG_MIGRATION_STATS=0
+
+MODEL=Qwen/Qwen3-30B-A3B-Instruct-2507
+USE_BATCHING=true  # repeat with false
+EPLB_CONFIG="{\"window_size\":50,\"step_interval\":50,\
+\"num_redundant_experts\":32,\"log_balancedness\":false,\
+\"use_async\":true,\"communicator\":\"nixl\",\
+\"enable_migration_batching\":$USE_BATCHING}"
+
+vllm serve "$MODEL" --dtype float16 --port 8000 \
+  --gpu-memory-utilization 0.9 --max-model-len 4096 \
+  --enable-prefix-caching --tensor-parallel-size 4 \
+  --distributed-executor-backend ray --enable-expert-parallel \
+  --enable-eplb --eplb-config "$EPLB_CONFIG" --enforce-eager
+\end{lstlisting}
+
+\section{Warm-up and formal workload}
+
+\begin{lstlisting}[style=code,language=bash]
+vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
+  --dataset-name random --random-prefix-len 300 \
+  --random-input-len 200 --random-output-len 300 \
+  --num-prompts 8 --max-concurrency 8 --seed 123 \
+  --temperature 0 --ignore-eos --disable-tqdm
+
+vllm bench serve --backend vllm --model "$MODEL" --port 8000 \
+  --dataset-name random --random-prefix-len 300 \
+  --random-input-len 200 --random-output-len 300 \
+  --num-prompts 500 --max-concurrency 32 --seed 0 \
+  --temperature 0 --percentile-metrics ttft,tpot,e2el \
+  --metric-percentiles 50,99 --ignore-eos --disable-tqdm \
+  --save-result --result-dir "$RESULTS" \
+  --result-filename bench.json
+\end{lstlisting}
+
+\section{NVTX-only Nsight capture}
+
+On the head node, Ray was launched inside a named Nsight session:
+
+\begin{lstlisting}[style=code,language=bash]
+nsys start --session-new=eplb_final_0 --sample=none \
+  --cpuctxsw=none -o "$RESULTS/trace/rank0"
+
+nsys launch --session=eplb_final_0 --trace=nvtx --wait=all \
+  ray start --head --node-ip-address=10.31.0.89 \
+  --port=6379 --num-gpus=1 --disable-usage-stats
+\end{lstlisting}
+
+Each worker used the analogous command with its own session, output filename,
+and node IP. The trace files should be opened with Nsight Systems 2024.5.1 or
+newer. Searching for \code{eplb: schedule migration batches} locates the
+cycle-wide scheduler ranges.
+
+The explicit NVTX range was temporary profiling instrumentation. It was not
+enabled in the clean E2E measurements and was removed from the final
+production change.
+
+\section{Unit tests}
+
+The upstream contribution was validated with:
+
+\begin{lstlisting}[style=code,language=bash]
+.venv/bin/python -m pytest \
+  tests/distributed/test_eplb_migration_scheduler.py -q
+\end{lstlisting}
+
+The reported result was 12 passing tests. Selected pre-commit hooks were also
+run on every modified production and test file.

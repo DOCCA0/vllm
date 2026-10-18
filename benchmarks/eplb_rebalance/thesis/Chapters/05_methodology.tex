@@ -1,0 +1,226 @@
+\label{ch:methodology}
+
+\section{Evaluation goals}
+
+The experiments answer three operational questions:
+
+\begin{enumerate}
+  \item Does enabling migration batching improve user-visible serving metrics
+  under asynchronous EPLB?
+  \item Does it reduce high-percentile network traffic, the mechanism the
+  scheduler is designed to affect?
+  \item Is the CPU scheduling overhead small relative to the observed E2E time
+  saved?
+\end{enumerate}
+
+These questions lead to three directional expectations rather than formal
+statistical hypotheses. First, batching should lower the high tail of observed
+NIC traffic because fewer migration flows contend at one rank. Second, if that
+reduction protects foreground communication, output throughput should increase
+and TTFT, TPOT, and E2E latency should decrease. Third, cycle-wide schedule
+construction should consume only a small fraction of the serving time saved.
+The single A/B pair can check whether the observations have these directions,
+but it cannot establish significance or estimate run-to-run variance.
+
+Two separate runs are used for two separate purposes. A clean A/B serving run
+compares batching off and on without profiler instrumentation. A profiling run
+repeats the batching-on condition with NVTX-only Nsight Systems capture. This
+separation prevents profiler overhead from contaminating the reported serving
+comparison.
+
+\section{Hardware and software environment}
+
+\begin{table}[t]
+  \centering
+  \caption{Experimental environment.}
+  \label{tab:environment}
+  \begin{tabularx}{\textwidth}{lX}
+    \toprule
+    Component & Configuration \\
+    \midrule
+    Nodes & Four Ubuntu 22.04.5 servers \\
+    Accelerators & One NVIDIA Quadro RTX 6000, \SI{24}{GB}, per node \\
+    Network & \SI{10}{Gb/s} Ethernet, interface \code{eno2}, no RDMA \\
+    Model & Qwen/Qwen3-30B-A3B-Instruct-2507, FP16 \\
+    Parallelism & Tensor parallel size 4; expert parallel enabled \\
+    Runtime & Experimental vLLM build; Ray 2.56.1 \\
+    Migration backend & NIXL 1.3.2 over UCX/TCP \\
+    Execution & Eager mode; prefix caching enabled \\
+    Profiling & NVIDIA Nsight Systems 2024.5.1, NVTX-only \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+The four GPU processes serve as both TP and EP ranks. One GPU per host makes
+each inter-rank expert transfer an inter-node transfer, avoiding ambiguity
+between local NVLink/PCIe movement and Ethernet traffic. The hardware is not a
+modern production cluster; its relatively constrained network is useful for
+observing contention but limits external validity.
+
+NCCL and Gloo are bound to \code{eno2}, InfiniBand is disabled, and UCX is
+also bound to the same device. NIXL is selected explicitly rather than relying
+on automatic backend selection. Both A/B conditions use the same software
+revision and network configuration.
+
+\section{Model and EPLB configuration}
+
+The evaluated model contains 48 layers and 128 experts, selecting eight experts
+per token \cite{qwen3modelcard}. Server maximum sequence length is 4096 and GPU
+memory utilization is set to 0.9. EPLB uses the configuration in
+\cref{tab:eplb-config}.
+
+\begin{table}[t]
+  \centering
+  \caption{EPLB parameters common to the A/B experiment.}
+  \label{tab:eplb-config}
+  \begin{tabular}{lr}
+    \toprule
+    Parameter & Value \\
+    \midrule
+    \code{window\_size} & 50 \\
+    \code{step\_interval} & 50 \\
+    \code{num\_redundant\_experts} & 32 \\
+    \code{log\_balancedness} & false \\
+    \code{use\_async} & true \\
+    \code{communicator} & \code{nixl} \\
+    \code{enable\_migration\_batching} & false / true \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The short observation and step intervals deliberately cause recurring
+rebalances during the finite benchmark. This is a stress-oriented configuration
+for studying the migration path rather than a recommended production default.
+The 32 redundant experts create physical flexibility for EPLB to react to
+recent routing demand.
+
+\section{Workload}
+
+Each condition starts a fresh server and executes an eight-request warm-up.
+The measured workload uses \code{vllm bench serve} with 500 successful requests
+and maximum concurrency 32. Every request has a 300-token random prefix, 200
+additional input tokens, and 300 requested output tokens. The random seed is
+zero, temperature is zero, and end-of-sequence tokens are ignored so all
+requests produce the configured output length. Prefix caching remains enabled,
+matching the intended online configuration rather than disabling cache to
+manufacture compute load.
+
+The request set is synthetic. It controls sequence lengths and makes the A/B
+conditions comparable, but random tokens are not representative of semantic
+production traffic. The experiment studies system interference under frequent
+migration, not application-level output quality. Because placement batching
+does not modify model computation or routing decisions, no accuracy evaluation
+is required for the feature itself.
+
+\section{A/B procedure and controls}
+
+The independent variable is
+\code{enable\_migration\_batching}. All other documented parameters are held
+constant. The off case ran first and the on case second, each with a fresh
+server. Both completed 500 of 500 requests with zero failures. The benchmark
+client records aggregate duration and request-level latency distributions.
+
+The experiment is a single repetition. It therefore cannot quantify run-to-run
+variance, confidence intervals, or statistical significance. Percent changes
+are descriptive comparisons of these archived runs. A stronger study would
+randomize condition order and repeat each condition enough times to estimate
+variance. This limitation is stated explicitly rather than obscured by the
+large number of requests, because requests within one long run are not
+independent replications of server startup and cluster state.
+
+\section{Serving metrics}
+
+For a metric where larger is better, such as throughput, improvement is
+
+\begin{equation}
+  I_{\uparrow}=\frac{V_{\mathrm{on}}-V_{\mathrm{off}}}
+  {V_{\mathrm{off}}}\times100\%.
+\end{equation}
+
+For a latency metric where smaller is better,
+
+\begin{equation}
+  I_{\downarrow}=\frac{V_{\mathrm{off}}-V_{\mathrm{on}}}
+  {V_{\mathrm{off}}}\times100\%.
+\end{equation}
+
+The thesis reports output tokens per second and P50/P99 TTFT, TPOT, and E2E
+latency. Request throughput is retained in the raw JSON and the supplementary
+table. Because all 500 requests produce exactly 300 output tokens, request and
+output throughput necessarily have the same relative change; the main text
+uses output throughput to avoid presenting this one result twice. P99 values
+are computed by the benchmark client from the 500 request samples.
+
+\section{NIC measurement}
+
+NIC traffic is not produced by \code{vllm bench serve}. A separate sampler on
+the head node reads the cumulative receive and transmit byte counters under
+\path{/sys/class/net/eno2/statistics/} once per second. For adjacent samples at
+times $t_{i-1}$ and $t_i$, aggregate traffic is
+
+\begin{equation}
+  B_i=\frac{(RX_i-RX_{i-1})+(TX_i-TX_{i-1})}
+  {t_i-t_{i-1}}.
+\end{equation}
+
+Values are converted to MB/s and the P99 is computed over the formal benchmark
+window. Summing RX and TX describes total head-node interface pressure; it is
+not physical link utilization and it cannot attribute bytes to EPLB versus
+inference. The A/B comparison and time-series shape provide supporting evidence,
+not packet-level causal attribution.
+
+\section{Scheduler profiling}
+
+The profiling run uses the same model, EPLB settings, workload lengths,
+concurrency, and 500 prompts as the batching-on E2E condition. The only change
+is that Ray processes are launched in NVTX-only Nsight Systems sessions with
+CPU sampling and context-switch tracing disabled. NVTX ranges are designed to
+mark application phases with low capture volume \cite{nsightguide}.
+
+The range \code{eplb: schedule migration batches} encloses the call that builds
+schedules for all 48 layers. Each rank writes its own \code{rank*.nsys-rep}.
+Explicit formal-start and formal-end timestamps exclude model loading and
+warm-up. The reports were analyzed with Nsight Systems 2024.5.1. For each rank,
+the number of calls, P50 and P99 elapsed duration per call, and cumulative
+duration are extracted.
+
+The explicit CUDA NVTX range was temporary measurement instrumentation added
+only to make the asynchronous EPLB worker visible to Nsight Systems. It was
+used in the profiling run, was absent from the clean E2E A/B run, and was not
+included in the final production patch. The scheduler call and placement
+inputs were otherwise unchanged.
+
+Ranks construct their identical schedules concurrently on different host
+CPUs. Their costs must therefore not be summed to estimate critical-path
+overhead. A conservative comparison uses the largest cumulative rank cost,
+$C_{\max}$, and clean A/B time saved,
+
+\begin{equation}
+  S=T_{\mathrm{off}}-T_{\mathrm{on}}.
+\end{equation}
+
+The cost-to-saved ratio is
+
+\begin{equation}
+  R=\frac{C_{\max}/1000}{S}\times100\%.
+  \label{eq:cost-ratio}
+\end{equation}
+
+This ratio does not claim that all scheduling time lies on the serving critical
+path. It intentionally compares a directly measured conservative CPU elapsed
+cost with the directly measured wall-clock difference.
+
+\section{Data provenance and reproducibility}
+
+The authoritative E2E source directory is
+\path{results/serving_nixl_20260911_async_random500}. It contains the
+unmodified off/on \code{bench.json}, server and client logs, EPLB
+configuration, one-second \code{nic.tsv}, warm-up output, plotting source, and
+summary CSV files. The authoritative profiling directory is the same name with
+suffix \code{\_profile}; it contains four Nsight reports, formal-window
+timestamps, benchmark output, exact commands, and \code{profile\_summary.csv}.
+
+Older directories represent intermediate designs or exploratory workloads and
+are excluded from all final tables. Reproduction commands are transcribed in
+\cref{app:commands}. This explicit provenance prevents accidental selection of
+a favorable intermediate run.

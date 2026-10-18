@@ -1,0 +1,212 @@
+\label{ch:design}
+
+\section{Design requirements}
+
+The production design follows six requirements derived from the vLLM runtime.
+
+\begin{enumerate}
+  \item \textbf{Semantic preservation.} The same new placement must be reached
+  as in the unbatched path. Scheduling may change transfer order, but not the
+  selected logical experts, destination slots, or replica assignment.
+
+  \item \textbf{No endpoint contention inside a batch.} Each rank participates
+  in at most one coalesced directed flow, whether as sender or receiver.
+  Independent rank pairs should remain concurrent.
+
+  \item \textbf{Determinism.} Every rank builds the same batch structure from
+  replicated placement arrays without exchanging a separate schedule.
+
+  \item \textbf{Low control-plane cost.} The algorithm runs repeatedly during
+  serving. It must avoid an optimizer and minimize Python object construction
+  and repeated function-entry overhead.
+
+  \item \textbf{Communicator compatibility.} Batch boundaries must be visible
+  to the communication backend, and NIXL's transfer context lifecycle must be
+  respected.
+
+  \item \textbf{Safe rollout.} The new behavior is disabled by default and is
+  reachable only in asynchronous EPLB. Existing synchronous users retain the
+  established migration path.
+\end{enumerate}
+
+\section{From placements to remote flows}
+
+For each rank, the scheduler converts its old and new local slot arrays into
+sets of logical expert identifiers. The difference
+$H^{\mathrm{new}}_r\setminus H^{\mathrm{old}}_r$ identifies experts that rank
+$r$ must receive remotely. An expert already present locally does not generate
+a remote instruction even when its physical row changes.
+
+The algorithm then indexes old source ranks only for expert identifiers that
+are needed somewhere. This filtering avoids building a global inverse index
+for experts irrelevant to the current migration. If several source replicas
+exist, the ordered destinations are divided evenly among them using quotient
+and remainder assignment. This reproduces the legacy source-balancing logic.
+
+Finally, expert identifiers are grouped in a dictionary keyed by
+$(s,d)$. One \code{MigrationFlow} contains the source rank, destination rank,
+and immutable tuple of experts for that ordered pair. Direction is retained for
+send/receive execution, although the contention test treats both endpoints
+symmetrically.
+
+\section{Greedy rank-disjoint grouping}
+
+The communication graph has rank vertices and one coalesced edge for each
+directed pair. A batch is a matching. The scheduler processes flows in
+deterministic insertion order and places each in the first existing batch whose
+endpoint set is disjoint. If no batch is compatible, it creates a new one.
+
+Instead of maintaining a Python set for every batch, the implementation uses an
+integer bit mask. For a flow $(s,d)$,
+
+\begin{equation}
+  m_{s,d}=(1\ll s)\;\lor\;(1\ll d).
+\end{equation}
+
+If $u_b$ is the mask of ranks already used in batch $b$, the flow fits exactly
+when $m_{s,d}\land u_b=0$. On insertion, $u_b$ becomes
+$u_b\lor m_{s,d}$. This is constant-time endpoint testing for practical EP
+group sizes.
+
+\begin{algorithm}[t]
+  \caption{Deterministic first-fit migration batching}
+  \label{alg:greedy}
+\begin{lstlisting}[style=code,mathescape=true]
+Input: coalesced flows P in deterministic order
+batches = []; used = []
+for flow p = (src, dst, expert_ids) in P:
+    mask = (1 << src) | (1 << dst)
+    for batch_index in range(len(batches)):
+        if mask & used[batch_index] == 0:
+            batches[batch_index].append(p)
+            used[batch_index] |= mask
+            break
+    else:
+        batches.append([p])
+        used.append(mask)
+return batches
+\end{lstlisting}
+\end{algorithm}
+
+The greedy algorithm does not promise the minimum number of colors for every
+graph. That is acceptable because batch count is secondary to a simple and
+conservative concurrency cap. On four ranks, a batch contains at most two
+independent directed flows. The rank-disjoint rule intentionally leaves
+headroom rather than trying to saturate the NIC with migrations. Reciprocal
+flows such as $r_0\rightarrow r_1$ and $r_1\rightarrow r_0$ are distinct
+directed flows and therefore occupy separate batches, even though they involve
+the same rank pair.
+
+\section{Correctness invariants}
+
+The scheduler and execution path maintain three key invariants.
+
+\paragraph{Completeness.}
+Each remote gain appears in exactly one coalesced pair and each pair is inserted
+in exactly one batch. Hence every derived migration is scheduled once.
+
+\paragraph{Conflict freedom.}
+Suppose two flows in the same batch share rank $r$. Both masks contain bit $r$.
+When the second flow is considered, its mask intersects the batch mask, so the
+algorithm rejects that batch. This contradicts co-residence; therefore flows in
+a batch have disjoint endpoints.
+
+\paragraph{Local-copy preservation.}
+Experts already available on a destination rank are excluded before remote
+flow construction. The existing local copy and receive-primary metadata still
+control physical-row updates. Batching modifies only the remote communication
+phase.
+
+Unit tests cover deterministic grouping, rank-pair coalescing, random
+instruction completeness, exclusion of local copies, replica balancing,
+multi-layer equivalence, and execution with a mock communicator. The upstream
+change added the test file to vLLM's expert-parallel CI area.
+
+\section{Complexity}
+
+Let $S$ be the number of physical slots across all ranks in one layer, $M$ the
+number of remote expert migrations, $F$ the number of distinct directed rank
+pairs after coalescing, and $K$ the number of produced batches. Placement
+scanning is $O(S)$. Building and grouping the migrations is $O(M)$ expected
+time with hash tables. First-fit placement is $O(FK)$ in the worst case and
+$O(F)$ storage, in addition to the placement indices.
+
+For a fixed small number of ranks, $K$ is bounded and the practical cost is
+close to linear in placement size plus migration count. More importantly, the
+implementation invokes the outer scheduler once for all layers in a rebalance
+cycle. If the model contains $L$ MoE layers, it still constructs $L$
+independent schedules, but avoids $L$ separate profiled entry points and
+repeated surrounding Python setup.
+
+\section{Cycle-wide precomputation, layer-wise transfer}
+
+An earlier design called the scheduler immediately before each layer transfer.
+The final design receives two-dimensional old and new placement arrays and
+computes a list of schedules---one per layer---inside one cycle-wide call. This
+does \emph{not} combine expert payloads from different layers. The asynchronous
+worker later iterates over layers and passes only the corresponding schedule to
+the transfer function.
+
+The distinction is important. Weight transfers and mapping activation preserve
+the existing layer lifecycle, limiting memory and synchronization changes.
+Only CPU schedule construction is aggregated. Qwen3-30B-A3B has 48 layers, so
+one profiling range represents schedule construction for all 48 layers. The
+worker waits for the new placement maps before this step; adding a few
+milliseconds of CPU work once per rebalance cycle is negligible relative to
+the measured cycle interval, but this claim is verified rather than assumed in
+\cref{sec:profile-results}.
+
+\section{Batched execution}
+
+For a layer, the executor first creates maps from logical expert identifier to
+the old and new local physical row. It then processes the ordered list of
+batches. For every batch it:
+
+\begin{enumerate}
+  \item restores the communicator's transfer context for the current old
+  placement and layer;
+  \item posts sends for flows whose source is the local EP rank;
+  \item posts receives into expert buffers for flows whose destination is the
+  local EP rank; and
+  \item calls \code{communicator.execute()} to preserve the batch boundary.
+\end{enumerate}
+
+For NIXL, restoring context per batch is required because execution drains the
+queued operations and clears the transfer context. Calling \code{execute()}
+once after all batches would submit the operations together, erasing the very
+boundaries that enforce rank-disjoint concurrency. Conversely, an uninvolved
+rank can have no send or receive in a given batch; the backend and existing
+layer coordination govern progress.
+
+\section{Configuration and failure containment}
+
+The change adds \code{enable\_migration\_batching} to \code{EPLBConfig}, with
+default \code{false}. The effective property is
+
+\begin{equation}
+  \texttt{migration\_batching\_enabled}
+  =\texttt{use\_async}\land\texttt{enable\_migration\_batching}.
+\end{equation}
+
+Thus, setting the new flag cannot alter synchronous EPLB. This is a deliberate
+engineering boundary. In synchronous mode, serving is stopped and serial
+batches can only delay its resumption. In asynchronous mode, the operator can
+enable batching when network interference is a concern. Keeping the feature
+opt-in also acknowledges that the current evidence comes from one cluster and
+that the optimal concurrency limit may vary with topology.
+
+When disabled, the original path constructs local metadata, posts all remote
+sends and receives, and invokes the communicator once. The feature does not
+change model routing, balancing policy, or numerical output. This small impact
+surface was important for upstream review and made rollback a configuration
+change rather than a code revert.
+
+\section{Upstream integration}
+
+The final patch added a scheduler module, unit tests, one configuration field,
+async-worker wiring, and a batched branch in the migration executor. It did not
+ship the offline ILP, datasets, experimental scripts, or thesis artifacts as
+runtime dependencies. The contribution was merged into vLLM on 3 October 2026
+as pull request \prnumber\ \cite{vllmpr52641}. The separation between research
+artifacts and production files keeps the upstream change reviewable and avoids
+coupling online serving to the experimental environment.
