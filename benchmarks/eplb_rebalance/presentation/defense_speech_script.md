@@ -1,419 +1,258 @@
 # MSc Thesis Defense — Speech Script
 
-This script follows `eplb_migration_batching.pptx` slide by slide.
-The words in square brackets are actions. They do not need to be spoken.
+This script follows the current 16-slide version of
+`eplb_migration_batching.pptx`. The target speaking time is about 15 minutes.
+Text in square brackets is a presentation action and should not be spoken.
 
 ## Slide 1 — Title
 
 Good morning, everyone.
 
-My name is Wu Cao.
-Today, I will present my thesis project.
-The title is *Contention-Aware Expert Migration for MoE Serving*.
+My name is Wu Cao. Today I will present my thesis, *Contention-Aware Expert
+Migration for MoE Serving*.
 
-This work improves expert migration in vLLM.
-I am very proud that this work was merged into the official vLLM project.
-For me, this is important.
-It shows that the project is useful in a real system.
-It is not only work made to finish a thesis.
+This work improves expert migration in vLLM. I am proud that it was merged
+into the official vLLM project as pull request 52641. This means the work is
+useful in a real serving system. It is not only an exercise for my thesis.
 
 I would also like to thank my advisor, Professor Massimo Tornatore, and my
 co-advisor, Assistant Professor Qiaolun Zhang, for their support.
 
-The basic idea is shown here.
-Instead of sending all expert migrations together, I divide conflicting
-transfers into different batches.
-Independent transfers can still run together.
+The main idea is simple. Conflicting transfers are separated. Independent
+transfers can still run together.
 
 ## Slide 2 — Outline
 
 My talk has four parts.
 
-First, I will introduce Mixture-of-Experts, expert parallelism, and EPLB.
-Second, I will explain the network contention problem and the offline ILP
-model.
-Third, I will present the online scheduling algorithm and its integration into
-vLLM.
-Finally, I will show the serving results, NIC measurements, and profiling
+First, I will introduce MoE, expert parallelism, and EPLB. Then I will explain
+the contention model and the offline ILP. Next, I will present the online
+greedy scheduler. Finally, I will show the serving, network, and profiling
 results.
-
-Let us start with the background.
 
 ## Slide 3 — MoE and EP
 
-A Mixture-of-Experts model contains many expert networks.
-For each token, a router selects only a small number of experts.
-This is called top-k routing.
+A Mixture-of-Experts model contains many expert networks. For each token, a
+router selects only a small subset of them. This is called top-k routing.
 
-Because only a few experts run for each token, the model can have many
-parameters without using all of them every time.
+With expert parallelism, or EP, the experts are distributed across GPU ranks.
+The example on the right uses four ranks. Some experts can also have redundant
+copies.
 
-With expert parallelism, or EP, expert weights are distributed across GPU
-ranks.
-The example on the right uses four ranks.
-Each rank stores a different group of experts.
-Some experts may also have extra copies.
-
-Routing depends on the input.
-So expert popularity can change over time.
-This may overload some ranks while other ranks are less busy.
+Routing depends on the input. Therefore, expert popularity changes over time.
+Some ranks may become overloaded while other ranks are less busy. This is the
+reason we need dynamic expert load balancing.
 
 ## Slide 4 — Qwen3 MoE Architecture
 
-This figure shows where MoE appears in the full model.
+This figure shows where the experts are located in the full Qwen3 model.
 
-On the left, we have the complete Qwen3 decoder layer.
-Each layer contains an attention block and an MoE block.
+Each decoder layer contains attention and an MoE block. Inside the MoE block,
+the gate selects experts for each token. EPLB does not move the attention
+weights. It moves the expert weights in these MoE blocks.
 
-The center shows the attention and MLP structures.
-The right side shows the MoE block in more detail.
-A gate selects the top experts for each token.
-The selected expert outputs are then combined.
+Qwen3 contains 48 MoE layers. Therefore, one rebalance cycle can create expert
+migrations across many layers.
 
-EPLB does not move the attention weights.
-It moves the expert weights inside these MoE blocks.
-Qwen3 has many MoE layers.
-So one rebalance cycle can create many expert migrations.
+## Slide 5 — Sync and Async EPLB
 
-## Slide 5 — Asynchronous EPLB
+EPLB means Expert Parallel Load Balancing. It observes expert load, computes a
+new placement, and moves expert weights to the required ranks.
 
-EPLB means Expert Parallel Load Balancing.
-It has four main steps.
+[Point to the synchronous case.]
 
-First, vLLM collects the expert load.
-Second, it computes a new expert placement.
-Third, it moves the required expert weights.
-Finally, it switches to the new placement at a safe point.
+In synchronous EPLB, inference is paused during migration. In this case, one
+large batch finishes migration as fast as possible. Splitting it into several
+batches would make the serving pause longer. Therefore, my feature is always
+disabled in synchronous mode.
 
-In asynchronous EPLB, inference continues while the weights are moving.
-This avoids a full serving pause.
-However, inference and migration now share the same network.
+[Point to the asynchronous case.]
 
-[Point to the red box.]
+In asynchronous EPLB, inference continues while migration runs in the
+background. The migration and inference traffic share the same network.
 
-If many transfers start together, they may meet at the same rank or NIC.
-This creates a traffic burst.
-My goal is to reshape this migration traffic.
-The expert placement stays the same.
-Only the transfer order changes.
+Several batches make the migration itself slower. However, they reduce the
+traffic pressure seen by active requests. Users care about inference latency,
+not whether a background migration finishes a little earlier. This is the
+trade-off studied in this thesis.
 
-## Slide 6 — Sync and Async EPLB
+## Slide 6 — ILP Formulation
 
-The correct strategy depends on the EPLB mode.
+I first use an Integer Linear Program to describe the scheduling objective.
+The ILP is an offline reference. It is not executed in the serving path.
 
-Let us first look at synchronous EPLB.
-Inference is paused during migration.
-In this case, putting all migrations in one batch is the fastest choice for
-serving time.
-It finishes migration as soon as possible.
-It also makes the inference pause as short as possible.
-For this reason, my batching feature is disabled in synchronous mode.
+Each directed flow represents expert data moving from one rank to another.
+The variable x assigns a flow to a batch. The other variables describe active
+batches and link load.
 
-Asynchronous EPLB is different.
-Inference continues during migration.
-Splitting migration into several batches increases the total migration time.
-But in our contention model, it reduces the interference seen by inference.
-So inference becomes faster while migration finishes later.
+I will explain the objective first. [Point to the green formula.]
 
-Users care about request latency and serving speed.
-They do not usually care if background migration takes a little longer.
-Therefore, this trade-off is worthwhile in asynchronous mode.
+The primary objective is to minimize the worst modeled inference time. In
+practice, this means reducing the highest link pressure across all batches.
+Migration should not consume too much of the network capacity needed by
+inference.
 
-## Slide 7 — Problem Statement
+Now the constraints. [Point to the first formula.]
 
-Now I can define the scheduling problem.
-
-The inputs are the old placement, the new placement, the network topology,
-and the available link capacity.
-
-From the placement difference, I obtain directed migration flows.
-Each flow has a source rank and a destination rank.
-
-The decision is simple.
-I assign every flow to one migration batch.
-
-The objective is to reduce the worst network pressure seen by inference.
-
-There are two main rules.
-Every flow must run exactly once.
-Also, one rank can join at most one flow in the same batch.
-Independent rank pairs can still communicate in parallel.
-
-## Slide 8 — ILP Formulation
-
-I first studied the problem with an Integer Linear Program.
-This ILP is an offline reference.
-It is not used in the serving path.
-
-Here, x tells us whether flow p is placed in batch b.
-Variable y tells us whether a batch is used.
-Q is the migration load on one network link.
-
-I will explain the objective first.
-[Point to the green formula.]
-The objective is to minimize the worst modeled inference time.
-This is the same as reducing the highest normalized link pressure across all
-links and batches.
-Inference traffic already uses part of each link.
-The migration should avoid taking too much of the remaining capacity.
-
-Next are the constraints.
-[Point to the first formula.]
-Every flow must be assigned to exactly one batch.
+Every flow must execute exactly once.
 
 [Point to the second formula.]
-For each batch, one rank can communicate with at most one peer.
-This gives rank-disjoint flows.
 
-After finding the best inference value, I use fewer batches only as a
-tie-break.
-The main goal is still lower interference, not fewer batches.
+Within one batch, each rank can communicate with at most one peer. Therefore,
+flows in the same batch have disjoint endpoints.
 
-## Slide 9 — ILP Hotspot Example
+After the best objective value is found, fewer batches are used only as a
+tie-break. The main goal is lower contention, not minimum migration time.
 
-This small example explains the result.
+## Slide 7 — ILP Hotspot Example
 
-The left figure shows eight GPU ranks on four servers.
-The servers share an inter-server link.
-This shared link is the hotspot.
+This example makes the model easier to understand.
 
-The middle figure is the unbatched directed migration graph.
-All these transfers are submitted together.
-The peak normalized link load is 1.50.
-The modeled inference time is 4.75.
+The left graph shows eight GPU ranks on four servers. Some migration paths
+share the same inter-server link. This link becomes the hotspot.
 
-The right figure shows the ILP result.
-It uses four batches.
-Transfers inside one batch use different rank pairs.
-The peak link load falls from 1.50 to 0.50.
-The modeled inference time falls from 4.75 to 2.25.
+The middle graph shows the unbatched case. All flows are submitted together.
+The peak normalized load is 1.50, and the modeled inference time is 4.75.
 
-Migration itself takes longer because the batches run in sequence.
-This is expected.
-The purpose is to protect active inference.
+The right graph shows the ILP result with four batches. The peak load falls to
+0.50. The modeled inference time falls to 2.25.
 
-## Slide 10 — Online Design
+The migration takes longer because the batches run in sequence. This is
+expected. The purpose is to protect concurrent inference.
 
-The ILP gives an exact answer for the simplified model.
-It is useful for understanding the problem.
-It is also useful for checking small examples.
+## Slide 8 — Online Design
 
-However, I do not run the ILP in production.
-An online solver adds dependencies and unstable solve time.
-The network model is also only an approximation.
+The ILP explains the problem and gives an exact result for small examples.
+However, an online solver would add a dependency and unpredictable solve time.
 
-Instead, I keep the most useful rule from the ILP.
-Flows in one batch should not share a rank.
+The production design keeps the most useful rule: flows in one batch should
+not share a rank.
 
-The online scheduler uses a greedy first-fit method.
-It combines experts with the same source and destination.
-Then it groups flows that use different ranks.
+The scheduler first combines expert transfers with the same source and
+destination. It then applies greedy first-fit grouping. The result is
+deterministic, lightweight, and optional.
 
-The result is deterministic and lightweight.
-It is also optional.
-Most importantly, it does not change expert placement.
-It only changes migration order.
+The expert placement does not change. Only the migration order changes. For
+lower Python overhead, schedules for all 48 layers are built in one call per
+rebalance cycle.
 
-## Slide 11 — Scheduling Pipeline
+## Slide 9 — Greedy Algorithm
 
-The scheduling pipeline has five steps.
+This example shows the greedy algorithm.
 
-First, I compare the old and new placement arrays.
-Second, I find the experts that must arrive from another rank.
-Experts that already exist locally do not need network transfer.
+Flow zero uses ranks zero and one, so it enters batch zero. Flow one uses ranks
+two and three. It is independent, so it also enters batch zero.
 
-Third, I choose source replicas.
-The destinations are balanced across available replicas.
+Flow two uses ranks one and two. It conflicts with the first batch, so it
+starts batch one. Flow three uses ranks zero and three. It does not conflict
+with flow two, so it also enters batch one.
 
-Fourth, I coalesce transfers with the same directed rank pair.
-For example, two transfers from rank zero to rank one become one flow.
-This avoids making the same contention decision twice.
+In graph terms, every batch is a matching. No rank appears twice in the same
+batch. This limits fan-in and fan-out while keeping safe parallel transfers.
 
-Finally, I apply greedy first-fit grouping.
-This creates rank-disjoint migration batches.
+## Slide 10 — Experimental Setup
 
-The existing placement and source-selection behavior are preserved.
-My code changes only the final transfer schedule.
+I evaluated the system on four nodes. Each node had one RTX 6000 GPU with 24
+gigabytes of memory. The nodes used 10-gigabit Ethernet. NIXL communicated
+through UCX over TCP, without RDMA.
 
-## Slide 12 — Greedy First-Fit
+The model was Qwen3-30B-A3B-Instruct-2507 in FP16. Tensor parallelism and
+expert parallelism were both four.
 
-This slide gives a small first-fit example.
+I used asynchronous EPLB with prefix caching enabled. The benchmark contained
+500 prompts at concurrency 32. Each request had a 300-token prefix, 200 more
+input tokens, and 300 output tokens.
 
-Flow zero uses ranks zero and one.
-So it enters batch zero.
+The off and on cases used the same request stream. The batching option was the
+only intended difference. All 500 requests completed in both cases.
 
-Flow one uses ranks two and three.
-These ranks are different from zero and one.
-So flow one can also enter batch zero.
+## Slide 11 — E2E Results
 
-Flow two uses ranks one and two.
-It conflicts with both flows in batch zero.
-So it starts batch one.
-
-Flow three uses ranks zero and three.
-It does not conflict with flow two.
-So it can also enter batch one.
-
-In graph terms, each batch is a matching.
-No rank appears twice inside the same batch.
-This simple rule limits fan-in and fan-out without stopping safe parallelism.
-
-## Slide 13 — vLLM Integration
-
-The implementation separates scheduling from data transfer.
-
-Once per rebalance cycle, the scheduler receives placement arrays for all 48
-MoE layers.
-It builds all layer schedules in one call.
-This greatly reduces Python call overhead.
-
-The 48 schedules are still independent.
-Expert data from different layers is not mixed together.
-
-During execution, vLLM processes the layers one by one.
-For each layer, it sets the transfer context, adds sends and receives,
-executes the batch, and activates the new placement.
-
-NIXL clears its transfer context after executing a batch.
-Therefore, the implementation restores the context for every batch.
-This preserves real batch boundaries during communication.
-
-## Slide 14 — Experimental Setup
-
-I evaluated the system on four nodes.
-Each node had one RTX 6000 GPU with 24 gigabytes of memory.
-The nodes used 10-gigabit Ethernet.
-NIXL communicated through UCX over TCP.
-RDMA was not available.
-
-The model was Qwen3-30B-A3B-Instruct-2507 in FP16.
-Tensor parallelism and expert parallelism were both four.
-
-I used asynchronous EPLB.
-The prefix cache was enabled.
-The test had 500 prompts and concurrency 32.
-Each request had a 300-token prefix, 200 more input tokens, and 300 output
-tokens.
-
-The off and on cases used the same request stream.
-The batching switch was the only intended difference.
-All 500 requests completed in both cases.
-
-## Slide 15 — E2E Results
-
-This table shows the end-to-end serving results.
-For every metric, a positive improvement is better.
+This table shows the end-to-end serving results. Positive improvement means
+that the batching result is better.
 
 Output throughput increased by 2.28 percent.
 
-TTFT improved by 1.18 percent at P50 and 1.30 percent at P99.
-TTFT means time to first token.
-
-TPOT improved by 1.94 percent at P50 and 0.87 percent at P99.
-TPOT means time per output token.
-
+Time to first token improved by 1.18 percent at P50 and 1.30 percent at P99.
+Time per output token improved by 1.94 percent at P50 and 0.87 percent at P99.
 End-to-end latency improved by 3.18 percent at P50 and 1.50 percent at P99.
 
-The key point is consistency.
-Throughput, TTFT, TPOT, and end-to-end latency all improved.
-There was no regression in the reported asynchronous serving metrics.
+The important point is consistency. Throughput, TTFT, TPOT, and end-to-end
+latency all improved. There is no regression in the reported asynchronous
+serving metrics.
 
-## Slide 16 — Serving Improvements
+## Slide 12 — Serving Improvements
 
-This chart shows the same result in a simpler form.
+This chart presents the same result visually.
 
-All bars are above zero.
-Throughput improves by 2.28 percent.
-The latency improvements range from 0.87 percent to 3.18 percent.
+All bars are above zero. The gains range from 0.87 to 3.18 percent. This is a
+scheduling-only change. It does not change the model, placement, or generated
+output. It only reduces interference from background migration.
 
-These numbers may look small.
-But this is a scheduling change in an already optimized serving system.
-It does not change the model or the output.
-It only reduces interference from background migration.
+## Slide 13 — NIC Traffic
 
-The largest gain is the P50 end-to-end latency improvement of 3.18 percent.
-This suggests that migration batching gives more network headroom to active
-requests.
+I also measured network traffic to check the mechanism behind the serving
+improvement.
 
-## Slide 17 — NIC Traffic
+The plots show one-second receive-plus-transmit traffic samples. Without
+batching, the P99 rate is 599.81 megabytes per second. With batching, it falls
+to 538.40 megabytes per second. This is a reduction of 10.24 percent.
 
-To check the mechanism, I also measured NIC traffic.
+The purpose is not to reduce every sample. It is to smooth the large traffic
+bursts. The lower tail traffic leaves more network headroom for inference.
 
-This plot uses one-second receive-plus-transmit samples from the head node.
-The gray plot is batching off.
-The blue plot is batching on.
+## Slide 14 — Profiling Method
 
-Without batching, the P99 traffic rate is 599.81 megabytes per second.
-With batching, it is 538.40 megabytes per second.
-This is a reduction of 10.24 percent.
+The greedy scheduler adds CPU work. Therefore, I also need to answer one more
+question: is this extra cost small compared with the serving time it saves?
 
-The goal is not to reduce every network sample.
-The goal is to reduce the large traffic bursts.
-Lower tail traffic leaves more network headroom for inference.
-This result supports the reason behind the serving improvements.
+I measure the two sides separately.
 
-## Slide 18 — Profiling Method
+First, I add a temporary NVTX range around the cycle-wide greedy scheduler.
+Then I use Nsight Systems to record every scheduler call on all four Ray
+workers. In the trace, this range is named *eplb: schedule migration batches*.
 
-Next, I measured the CPU cost of the scheduler.
+One scheduler call builds the batches for all 48 MoE layers. I sum the call
+times for each rank. Because the ranks work concurrently, I use the largest
+rank total instead of adding all four ranks together.
 
-The clean serving benchmark and the profiling run were separate.
-This avoids changing the end-to-end A/B result with profiling overhead.
+Next, I measure the benefit with a clean asynchronous E2E A/B test. This test
+uses the same serving settings, but profiling is disabled. The saved serving
+time is the batching-off duration minus the batching-on duration.
 
-I used NVTX-only Nsight Systems traces on all four Ray workers.
-The model, EPLB settings, and workload lengths were the same as in the serving
-test.
-The profiling run also used 500 prompts.
+Finally, I compare the measured scheduler cost with this saved time. In this
+way, profiling overhead does not affect the serving result.
 
-I added a temporary NVTX range around the scheduler.
-This was needed because asynchronous EPLB runs in a background thread.
-The range measures scheduler elapsed time only.
-It does not include expert transfer time.
+## Slide 15 — Profiling Results
 
-This temporary instrumentation was removed from the final production code.
+Each rank recorded 34 scheduler calls. The median cost is about seven to eight
+milliseconds per call. Remember that one call covers all 48 layers.
 
-## Slide 19 — Profiling Results
+The largest cumulative cost is 302.081 milliseconds on rank zero. In the clean
+E2E experiment, batching saved 105.932 seconds.
 
-Each rank recorded 34 scheduler calls.
-One call builds schedules for all 48 MoE layers.
+So the conservative scheduler-cost-to-serving-saving ratio is only 0.285
+percent. The extra CPU work is very small compared with the measured serving
+benefit.
 
-The P50 cost is about seven to eight milliseconds per call.
-The largest cumulative cost is 302.081 milliseconds on rank zero.
+This is not a full causal breakdown. However, it directly answers whether the
+greedy scheduling overhead is worth paying in this experiment.
 
-The ranks schedule at the same time.
-So I do not add the four rank costs together.
-For a conservative comparison, I use the largest cumulative rank cost.
+## Slide 16 — Conclusion and Questions
 
-In the clean end-to-end experiment, batching saved 105.932 seconds.
-The scheduler cost is only 0.285 percent of this saved time.
+To conclude, asynchronous expert migration should be scheduled together with
+serving. It should not be treated only as a copy task that must finish as fast
+as possible.
 
-This comparison is not a full causal breakdown.
-However, it shows that the extra CPU scheduling cost is very small compared
-with the measured serving benefit.
+This work uses an offline ILP to explain the contention objective. It then
+turns the main constraint into a lightweight, rank-disjoint greedy scheduler
+for vLLM.
 
-## Slide 20 — Conclusion
+In the experiment, throughput improved by 2.28 percent. P50 end-to-end latency
+improved by 3.18 percent. NIC P99 traffic fell by 10.24 percent. The measured
+scheduler cost was only 0.285 percent of the serving time saved.
 
-To conclude, expert migration should be scheduled as part of serving.
-It should not be treated as an isolated copy task.
+The implementation is opt-in for asynchronous EPLB and disabled for
+synchronous EPLB. It was merged into upstream vLLM.
 
-This thesis makes four contributions.
-
-First, the model separates inference interference from migration completion
-time.
-Second, the algorithm builds rank-disjoint migration batches.
-Third, the design integrates this scheduler into asynchronous vLLM EPLB.
-Fourth, the experiments show improvements in serving and NIC tail traffic.
-
-Throughput improved by 2.28 percent.
-P50 end-to-end latency improved by 3.18 percent.
-NIC P99 traffic fell by 10.24 percent.
-
-The study still has limits.
-It uses one four-node cluster, one model, one backend, and one A/B run per
-condition.
-More hardware and workloads should be tested in future work.
-
-Finally, the optimization was merged into upstream vLLM.
-This confirms that the design is practical and useful beyond this thesis.
-
-Thank you for listening.
-I am happy to answer your questions.
+Thank you for listening. I am happy to answer your questions.
