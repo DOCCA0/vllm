@@ -1,6 +1,6 @@
 \label{ch:design}
 
-\section{Design requirements}
+\subsection{Design requirements}
 
 The production design follows six requirements derived from the vLLM runtime.
 
@@ -29,7 +29,7 @@ The production design follows six requirements derived from the vLLM runtime.
   established migration path.
 \end{enumerate}
 
-\section{From placements to remote flows}
+\subsection{From placements to remote flows}
 
 For each rank, the scheduler converts its old and new local slot arrays into
 sets of logical expert identifiers. The difference
@@ -49,7 +49,7 @@ and immutable tuple of experts for that ordered pair. Direction is retained for
 send/receive execution, although the contention test treats both endpoints
 symmetrically.
 
-\section{Greedy rank-disjoint grouping}
+\subsection{Greedy rank-disjoint grouping}
 
 The communication graph has rank vertices and one coalesced edge for each
 directed pair. A batch is a matching. The scheduler processes flows in
@@ -97,7 +97,7 @@ flows such as $r_0\rightarrow r_1$ and $r_1\rightarrow r_0$ are distinct
 directed flows and therefore occupy separate batches, even though they involve
 the same rank pair.
 
-\section{Correctness invariants}
+\subsection{Correctness invariants}
 
 The scheduler and execution path maintain three key invariants.
 
@@ -122,7 +122,7 @@ instruction completeness, exclusion of local copies, replica balancing,
 multi-layer equivalence, and execution with a mock communicator. The upstream
 change added the test file to vLLM's expert-parallel CI area.
 
-\section{Complexity}
+\subsection{Complexity}
 
 Let $S$ be the number of physical slots across all ranks in one layer, $M$ the
 number of remote expert migrations, $F$ the number of distinct directed rank
@@ -138,7 +138,7 @@ cycle. If the model contains $L$ MoE layers, it still constructs $L$
 independent schedules, but avoids $L$ separate profiled entry points and
 repeated surrounding Python setup.
 
-\section{Cycle-wide precomputation, layer-wise transfer}
+\subsection{Cycle-wide precomputation, layer-wise transfer}
 
 An earlier design called the scheduler immediately before each layer transfer.
 The final design receives two-dimensional old and new placement arrays and
@@ -156,7 +156,7 @@ milliseconds of CPU work once per rebalance cycle is negligible relative to
 the measured cycle interval, but this claim is verified rather than assumed in
 \cref{sec:profile-results}.
 
-\section{Batched execution}
+\subsection{Batched execution}
 
 For a layer, the executor first creates maps from logical expert identifier to
 the old and new local physical row. It then processes the ordered list of
@@ -178,7 +178,7 @@ boundaries that enforce rank-disjoint concurrency. Conversely, an uninvolved
 rank can have no send or receive in a given batch; the backend and existing
 layer coordination govern progress.
 
-\section{Configuration and failure containment}
+\subsection{Configuration and failure containment}
 
 The change adds \code{enable\_migration\_batching} to \code{EPLBConfig}, with
 default \code{false}. The effective property is
@@ -201,7 +201,7 @@ change model routing, balancing policy, or numerical output. This small impact
 surface was important for upstream review and made rollback a configuration
 change rather than a code revert.
 
-\section{Upstream integration}
+\subsection{Upstream integration}
 
 The final patch added a scheduler module, unit tests, one configuration field,
 async-worker wiring, and a batched branch in the migration executor. It did not

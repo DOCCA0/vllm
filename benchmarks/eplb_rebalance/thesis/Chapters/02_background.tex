@@ -104,7 +104,7 @@ only the asynchronous path and retains the synchronous behavior.
 \begin{figure}[t]
   \centering
   \begin{tikzpicture}[
-    node distance=9mm and 11mm,
+    node distance=13mm and 11mm,
     box/.style={draw,rounded corners,align=center,minimum width=31mm,minimum height=10mm},
     arr/.style={-{Latex[length=2mm]},thick}
   ]
@@ -120,7 +120,9 @@ only the asynchronous path and retains the synchronous behavior.
     \draw[arr] (transfer) -- (activate);
     \draw[arr] (activate) -- (serve);
     \draw[arr] (serve) -- (metrics);
-    \draw[arr,dashed] (serve) -- node[below,sloped]{shared network resources} (transfer);
+    \draw[arr,dashed]
+      (serve.south) to[out=-65,in=-115]
+      node[below]{shared network resources} (transfer.south);
   \end{tikzpicture}
   \caption{Simplified asynchronous EPLB control loop. The contribution of this
   thesis is the migration-scheduling block and its execution path.}
@@ -143,44 +145,3 @@ context. Consequently, every migration batch must restore the layer context,
 post only that batch's sends and receives, and call \code{execute()}. Moving
 the call outside the loop would collapse the batch boundaries and defeat the
 scheduler's concurrency constraint.
-
-\section{Scheduling as graph coloring}
-
-A migration layer can be represented by a graph whose vertices are ranks and
-whose directed edges are remote flows. If each rank may participate in at most
-one flow in a batch, edges sharing an endpoint cannot receive the same batch
-identifier. This is an edge-coloring constraint \cite{west2001graph}. Transfer
-direction and expert identity are still required for execution, but direction
-does not change whether two operations contend at a rank.
-
-Exact edge coloring is not the whole systems objective: link topology,
-different transfer sizes, replica choices, and foreground traffic can matter.
-Nevertheless, the graph abstraction gives a conservative, topology-independent
-rule. A matching is a set of edges with no shared endpoints; each produced
-batch is therefore a matching. Greedy first-fit coloring is inexpensive and
-deterministic, making it suitable for a control path that runs repeatedly.
-
-\section{Positioning relative to prior work}
-
-Most MoE literature treats balance at training time, routing time, or expert
-placement time. Load-balancing losses and bias updates aim to prevent router
-collapse \cite{fedus2021switch,wang2024lossfree}. EP systems optimize token
-dispatch and expert placement. This work begins after EPLB has already chosen
-a valid new placement. It does not change router probabilities, model outputs,
-or the placement objective. Instead, it schedules the physical copying needed
-to realize that placement.
-
-This separation is useful operationally. A placement algorithm may decide
-\emph{what} state should move, while a migration scheduler decides \emph{when}
-independent transfers should share the network. The feature is therefore
-complementary to improvements in placement quality and communicator speed. Its
-goal is not to reduce migration bytes, but to reshape their concurrency over
-time.
-
-The conservative greedy batching rule is inspired by the migration grouping
-used in OmniInfer's placement manager \cite{omniinferplacement}. This thesis
-does not claim the underlying rank-disjoint heuristic as a new graph
-algorithm. Its contribution is the formulation of the interference objective
-and the adaptation of that rule to vLLM's asynchronous EPLB path, including
-deterministic flow construction, NIXL lifecycle handling, cycle-wide schedule
-precomputation, correctness tests, and end-to-end serving evaluation.

@@ -9,7 +9,7 @@ Text in square brackets is a presentation action and should not be spoken.
 Good morning, everyone.
 
 My name is Wu Cao. Today I will present my thesis, *Contention-Aware Expert
-Migration for MoE Serving in vllm*.
+Parallel Load Balancing in Mixture-of-Experts Serving in vLLM*.
 
 This work improves expert migration in vLLM. I am proud that it was merged
 into the official vLLM project. This means the work is

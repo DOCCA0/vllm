@@ -83,6 +83,33 @@ def remove_page_subtitles(prs: Presentation) -> int:
     return removed
 
 
+def update_cover_title(prs: Presentation) -> None:
+    """Keep the defense title aligned with the final thesis title."""
+    cover = prs.slides[0]
+    for shape in cover.shapes:
+        if not shape.has_text_frame or not shape.text.startswith("Contention-Aware"):
+            continue
+        shape.left = Inches(0.63)
+        shape.top = Inches(1.08)
+        shape.width = Inches(4.12)
+        shape.height = Inches(2.45)
+        set_text(
+            shape,
+            "Contention-Aware Expert\n"
+            "Parallel Load Balancing in\n"
+            "Mixture-of-Experts Serving\n"
+            "in vLLM",
+            22,
+            RGBColor(20, 52, 91),
+            bold=True,
+        )
+        break
+    prs.core_properties.title = (
+        "Contention-Aware Expert Parallel Load Balancing in "
+        "Mixture-of-Experts Serving in vLLM"
+    )
+
+
 def set_shape_font_size(shape, size: float) -> None:
     for paragraph in shape.text_frame.paragraphs:
         paragraph.font.size = Pt(size)
@@ -895,6 +922,7 @@ def enlarge_small_text(prs: Presentation) -> None:
 
 def main() -> None:
     prs = Presentation(DECK)
+    update_cover_title(prs)
     removed = remove_page_subtitles(prs)
     rebuild_ilp_formulation(prs)
     rebuild_profiling_method(prs)

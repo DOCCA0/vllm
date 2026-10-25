@@ -469,7 +469,10 @@ add_text(
 )
 add_text(
     slide,
-    "Contention-Aware\nExpert Migration\nfor MoE Serving",
+    (
+        "Contention-Aware Expert\nParallel Load Balancing in\n"
+        "Mixture-of-Experts Serving\nin vLLM"
+    ),
     0.63,
     1.2,
     3.58,
@@ -2452,7 +2455,8 @@ add_text(
 
 
 prs.core_properties.title = (
-    "Contention-Aware Expert Migration for MoE Serving — MSc Thesis Defense"
+    "Contention-Aware Expert Parallel Load Balancing in "
+    "Mixture-of-Experts Serving in vLLM — MSc Thesis Defense"
 )
 prs.core_properties.subject = (
     "ILP formulation, online scheduling, vLLM integration, and evaluation"

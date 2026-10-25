@@ -1,6 +1,6 @@
 \label{ch:formulation}
 
-\section{Migration instructions and flows}
+\subsection{Migration instructions and flows}
 
 Consider one MoE layer before and after a rebalance. Let $R$ be the set of EP
 ranks and $E$ the set of logical experts. The old and new placement arrays
@@ -30,7 +30,7 @@ distributed as evenly as possible over source replicas in deterministic rank
 order. Migration batching changes ordering, not placement semantics or replica
 ownership.
 
-\section{Network model}
+\subsection{Network model}
 
 The offline model supports an explicit network graph and a compact two-tier
 topology. In the latter, GPUs connect to server endpoints through local links;
@@ -43,10 +43,15 @@ binary.
 The model measures flow size in expert units rather than bytes. It therefore
 assumes equal expert payloads within the layer. This matches the evaluated
 model architecture but would need extension for heterogeneous or quantized
-experts. It also assumes a constant fraction $\rho\in[0,1)$ of link capacity is
-already occupied by inference. The remaining headroom is $C_l(1-\rho)$.
+experts. Following the bottleneck and residual-bandwidth view used in coflow
+scheduling \cite{chowdhury2014varys}, it represents the bandwidth left by
+foreground inference as $C_l(1-\rho)$, where $\rho\in[0,1)$ is the fraction of
+link capacity occupied by inference. Varys estimates residual bandwidth from
+measurements; the illustrative ILP instead uses one normalized $\rho$ for all
+links. It is therefore a scenario parameter, not a deployment-independent
+empirical constant.
 
-\section{Constrained integer linear program}
+\subsection{Constrained integer linear program}
 
 Let $P$ be the set of coalesced flows and $B=\{0,\ldots,|P|-1\}$ a safe upper
 bound on candidate batches. The binary assignment variable is
@@ -99,7 +104,10 @@ linear in migration load relative to residual link capacity:
   \label{eq:slowdown}
 \end{equation}
 
-The endpoint limit is a policy constraint rather than a conclusion produced by
+The maximum-over-links structure follows the standard bottleneck observation
+that a collection of parallel network flows is limited by its most heavily
+loaded endpoint or link \cite{chowdhury2014varys}. The endpoint limit is a
+policy constraint rather than a conclusion produced by
 the solver. The ILP therefore finds the best schedule among assignments under
 the rank-disjoint-flow constraint; it does not compare that constraint with
 higher degrees of migration concurrency. The primary optimization inside this
@@ -116,7 +124,7 @@ objective, avoiding an arbitrary weighted sum between foreground latency and
 migration duration. The implementation uses SciPy's mixed-integer programming
 interface backed by HiGHS \cite{scipy2020,huangfu2018highs}.
 
-\section{Migration-time diagnostic}
+\subsection{Migration-time diagnostic}
 
 The ILP deliberately optimizes modeled inference time, not migration time. To
 make the trade-off visible, it reports a diagnostic. The duration of batch $b$
@@ -140,13 +148,17 @@ is not a contradiction. The two quantities answer different questions: the
 first represents foreground interference; the second represents how long the
 background reconfiguration remains unfinished.
 
-\section{Illustrative hotspot instance}
+\subsection{Illustrative hotspot instance}
 
 The example contains eight GPU ranks, two GPUs per server, local-link capacity
-18, network-link capacity 2, and inference utilization $\rho=0.6$. Eight
-migrations create a shared-network hotspot. The numeric units are normalized;
-the purpose is to demonstrate behavior, not to predict the experimental
-cluster.
+18, network-link capacity 2, and $\rho=0.6$, leaving 40\% normalized link
+headroom for migration. Eight migrations create a shared-network hotspot. The
+numeric units and the 40\% headroom are a deliberately stressed illustrative
+scenario, not measurements from the experimental cluster. Because the same
+$\rho$ multiplies every candidate link--batch pair, changing it uniformly
+rescales the reported value of $T_{\mathrm{infer}}$ but does not change which
+batch assignment minimizes the objective. A production predictor should
+replace it with per-link residual bandwidth measured at runtime.
 
 \begin{figure}[p]
   \centering
@@ -193,7 +205,7 @@ estimated migration time and uses four batches. This result supplied the design
 insight for the online scheduler: preserve parallelism between independent rank
 pairs while explicitly limiting each rank's fan-in and fan-out within a batch.
 
-\section{Why the ILP is not used online}
+\subsection{Why the ILP is not used online}
 
 The optimizer is intentionally separated from the serving path. It is not an
 ``optimal implementation'' of EPLB: it is an exact offline reference for one

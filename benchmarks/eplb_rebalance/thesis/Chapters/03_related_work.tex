@@ -1,0 +1,56 @@
+\label{ch:related-work}
+
+\section{MoE communication and load balancing}
+
+Most MoE literature treats balance at training time, routing time, or expert
+placement time. Load-balancing losses and bias updates aim to prevent router
+collapse \cite{fedus2021switch,wang2024lossfree}. Distributed inference adds a
+systems bottleneck: expert parallelism interleaves computation with all-to-all
+communication. Lina shows that skewed expert popularity creates imbalanced
+transfer sizes and bandwidth demand, and reports substantial P95 inference
+latency improvements from communication-aware scheduling
+\cite{li2023lina}. COMET independently reports that inter-device
+communication can account for up to 47\% of a MoE layer's execution time in
+the evaluated models and frameworks \cite{zhang2025comet}. These measurements
+motivate treating network interference as a first-class serving concern. They
+do not, however, imply a universal fixed link-utilization ratio.
+
+This work begins after EPLB has already chosen a valid new placement. It does
+not change router probabilities, model outputs, or the placement objective.
+Instead, it schedules the physical copying needed to realize that placement.
+A placement algorithm decides \emph{what} state should move; the migration
+scheduler decides \emph{when} independent transfers should share network
+resources. The two decisions are complementary.
+
+\section{Collective-flow scheduling}
+
+A set of expert migrations resembles a coflow: several point-to-point flows
+share a common completion or interference objective. Varys models coflow
+completion through the most heavily loaded ingress or egress endpoint and the
+remaining measured bandwidth at that endpoint \cite{chowdhury2014varys}. This
+bottleneck view is closely related to the maximum normalized link-load term in
+the ILP developed in \cref{ch:formulation}. The present model is intentionally
+simpler: it uses fixed routes and a normalized foreground-traffic parameter,
+and it optimizes a serving-interference surrogate rather than coflow
+completion time.
+
+\section{Graph scheduling and expert migration}
+
+A migration layer can be represented by a graph whose vertices are ranks and
+whose directed edges are remote flows. If each rank may participate in at most
+one flow in a batch, edges sharing an endpoint cannot receive the same batch
+identifier. This is an edge-coloring constraint \cite{west2001graph}. Transfer
+direction and expert identity remain necessary for execution, but direction
+does not change whether two flows contend at an endpoint. Each generated batch
+is a matching in this rank graph.
+
+Exact edge coloring alone is not the complete systems objective: topology,
+transfer sizes, replica choices, and foreground traffic also matter. The
+deployed first-fit rule is therefore a conservative, topology-independent
+heuristic rather than a claim of general optimality. It is inspired by the
+migration grouping used in OmniInfer's placement manager
+\cite{omniinferplacement}. The contribution of this thesis is the explicit
+interference formulation and the integration of this rule into vLLM's
+asynchronous EPLB path, including deterministic flow construction, NIXL
+lifecycle handling, cycle-wide schedule precomputation, correctness tests,
+and end-to-end serving evaluation.

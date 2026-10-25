@@ -63,8 +63,8 @@
 \usepackage[colorlinks=true,linkcolor=black,anchorcolor=black,citecolor=black,
   filecolor=black,menucolor=black,runcolor=black,urlcolor=bluepoli]{hyperref}
 \hypersetup{
-  pdftitle={Contention-Aware Expert Migration for Dynamic Load Balancing in
-    Mixture-of-Experts Serving},
+  pdftitle={Contention-Aware Expert Parallel Load Balancing in
+    Mixture-of-Experts Serving in vLLM},
   pdfauthor={WU CAO},
   pdfsubject={Master's thesis in High Performance Computing Engineering},
   pdfkeywords={mixture of experts, expert parallelism, EPLB, expert migration,
@@ -103,9 +103,9 @@
 \frontmatter
 
 \puttitle{
-  title=Contention-Aware Expert Migration for Dynamic Load Balancing in Mixture-of-Experts Serving,
+  title=Contention-Aware Expert Parallel Load Balancing in Mixture-of-Experts Serving in vLLM,
   name=WU CAO,
-  course=High Performance Computing Engineering \\ Ingegneria del Calcolo ad Alte Prestazioni,
+  course=High Performance Computing Engineering -- Ingegneria del Calcolo ad Alte Prestazioni,
   ID=11036000,
   advisor=Prof. Massimo Tornatore,
   coadvisor={Assistant Prof. Qiaolun Zhang},
@@ -215,22 +215,25 @@ del carico, migrazione degli esperti, contesa di rete, vLLM, NIXL
 \chapter{Introduction}
 \input{Chapters/01_introduction}
 
-\chapter{Background and Related Work}
+\chapter{Background}
 \input{Chapters/02_background}
 
-\chapter{Problem Formulation}
-\input{Chapters/03_formulation}
+\chapter{Related Work}
+\input{Chapters/03_related_work}
 
-\chapter{Design and Implementation}
+\chapter{Contention-Aware Expert Migration Scheduling}
+\section{Problem Formulation}
+\input{Chapters/03_formulation}
+\section{System Design and Implementation}
 \input{Chapters/04_design}
 
-\chapter{Experimental Methodology}
+\chapter{Experimental Evaluation}
+\section{Methodology}
 \input{Chapters/05_methodology}
-
-\chapter{Results and Discussion}
+\section{Results and Discussion}
 \input{Chapters/06_results}
 
-\chapter{Conclusions and Future Work}
+\chapter{Conclusions}
 \input{Chapters/07_conclusions}
 
 \addtocontents{toc}{\vspace{2em}}

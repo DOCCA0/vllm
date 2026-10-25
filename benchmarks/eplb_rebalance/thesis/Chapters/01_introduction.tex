@@ -128,11 +128,11 @@ specified in \cref{ch:methodology} and the appendices.
 \section{Thesis structure}
 
 \Cref{ch:background} introduces sparse MoE inference, expert parallelism,
-vLLM EPLB, asynchronous migration, and the relevant network and measurement
-concepts. \Cref{ch:formulation} defines the migration graph and develops the
-ILP model. \Cref{ch:design} presents the greedy scheduler, its invariants,
-complexity, and vLLM integration. \Cref{ch:methodology} documents the hardware,
-software, workload, metrics, and experimental controls. \Cref{ch:results}
-reports E2E, NIC, and profiling results, then discusses validity and
-limitations. Finally, \cref{ch:conclusions} summarizes the findings and
-outlines future work.
+vLLM EPLB, and asynchronous migration. \Cref{ch:related-work} reviews MoE
+communication, coflow scheduling, and graph-based migration grouping.
+\Cref{ch:formulation,ch:design} then develop the contention model and the
+production scheduler within one proposed-system chapter.
+\Cref{ch:methodology,ch:results} document the evaluation procedure and report
+the E2E, NIC, and profiling results within one experimental-evaluation chapter.
+Finally, \cref{ch:conclusions} summarizes the findings, limitations, and future
+work.

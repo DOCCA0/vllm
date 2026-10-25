@@ -1,6 +1,6 @@
 \label{ch:methodology}
 
-\section{Evaluation goals}
+\subsection{Evaluation goals}
 
 The experiments answer three operational questions:
 
@@ -28,7 +28,7 @@ repeats the batching-on condition with NVTX-only Nsight Systems capture. This
 separation prevents profiler overhead from contaminating the reported serving
 comparison.
 
-\section{Hardware and software environment}
+\subsection{Hardware and software environment}
 
 \begin{table}[t]
   \centering
@@ -62,7 +62,7 @@ also bound to the same device. NIXL is selected explicitly rather than relying
 on automatic backend selection. Both A/B conditions use the same software
 revision and network configuration.
 
-\section{Model and EPLB configuration}
+\subsection{Model and EPLB configuration}
 
 The evaluated model contains 48 layers and 128 experts, selecting eight experts
 per token \cite{qwen3modelcard}. Server maximum sequence length is 4096 and GPU
@@ -94,7 +94,7 @@ for studying the migration path rather than a recommended production default.
 The 32 redundant experts create physical flexibility for EPLB to react to
 recent routing demand.
 
-\section{Workload}
+\subsection{Workload}
 
 Each condition starts a fresh server and executes an eight-request warm-up.
 The measured workload uses \code{vllm bench serve} with 500 successful requests
@@ -112,7 +112,7 @@ migration, not application-level output quality. Because placement batching
 does not modify model computation or routing decisions, no accuracy evaluation
 is required for the feature itself.
 
-\section{A/B procedure and controls}
+\subsection{A/B procedure and controls}
 
 The independent variable is
 \code{enable\_migration\_batching}. All other documented parameters are held
@@ -128,7 +128,7 @@ variance. This limitation is stated explicitly rather than obscured by the
 large number of requests, because requests within one long run are not
 independent replications of server startup and cluster state.
 
-\section{Serving metrics}
+\subsection{Serving metrics}
 
 For a metric where larger is better, such as throughput, improvement is
 
@@ -151,7 +151,7 @@ output throughput necessarily have the same relative change; the main text
 uses output throughput to avoid presenting this one result twice. P99 values
 are computed by the benchmark client from the 500 request samples.
 
-\section{NIC measurement}
+\subsection{NIC measurement}
 
 NIC traffic is not produced by \code{vllm bench serve}. A separate sampler on
 the head node reads the cumulative receive and transmit byte counters under
@@ -169,7 +169,7 @@ not physical link utilization and it cannot attribute bytes to EPLB versus
 inference. The A/B comparison and time-series shape provide supporting evidence,
 not packet-level causal attribution.
 
-\section{Scheduler profiling}
+\subsection{Scheduler profiling}
 
 The profiling run uses the same model, EPLB settings, workload lengths,
 concurrency, and 500 prompts as the batching-on E2E condition. The only change
@@ -210,7 +210,7 @@ This ratio does not claim that all scheduling time lies on the serving critical
 path. It intentionally compares a directly measured conservative CPU elapsed
 cost with the directly measured wall-clock difference.
 
-\section{Data provenance and reproducibility}
+\subsection{Data provenance and reproducibility}
 
 The authoritative E2E source directory is
 \path{results/serving_nixl_20260911_async_random500}. It contains the

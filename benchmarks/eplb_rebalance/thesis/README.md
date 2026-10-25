@@ -8,9 +8,11 @@ makeglossaries Thesis
 latexmk -pdf -interaction=nonstopmode -halt-on-error Thesis.tex
 ```
 
-The generated `Thesis.pdf` has 42 numbered thesis pages (62 PDF pages including
-front matter, bibliography, appendices, acronym/list pages, acknowledgements,
-and two-sided blank pages).
+The generated `Thesis.pdf` has 58 PDF pages including front matter,
+bibliography, appendices, acronym/list pages, acknowledgements, and two-sided
+blank pages. Its six main chapters follow the reference thesis structure:
+introduction, background, related work, proposed system, experimental
+evaluation, and conclusions.
 
 The cover uses the author-provided 2026--2027 academic year. The template class
 was adjusted to render the co-advisor field, which the original class accepted

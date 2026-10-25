@@ -235,7 +235,8 @@ add_bg(slide)
 add_box(slide, 0.0, 0.0, 4.8, 7.5, fill=PANEL_2, line=PANEL_2, radius=False)
 add_text(slide, "vLLM · EPLB", 0.72, 0.65, 3.4, 0.35,
          size=13, color=CYAN, bold=True)
-add_text(slide, "Contention-Aware\nExpert Migration\nBatching", 0.72, 1.35,
+add_text(slide, "Contention-Aware Expert\nParallel Load Balancing in\n"
+         "Mixture-of-Experts Serving\nin vLLM", 0.72, 1.35,
          11.8, 2.25, size=39, color=INK, bold=True,
          valign=MSO_ANCHOR.TOP)
 add_text(slide, "From an optimization model to a merged production system",
@@ -597,7 +598,10 @@ add_text(slide, "github.com/vllm-project/vllm/pull/52641", 4.4, 6.55, 4.55, 0.35
 add_footer(slide, 15)
 
 
-prs.core_properties.title = "Contention-Aware Expert Migration Batching"
+prs.core_properties.title = (
+    "Contention-Aware Expert Parallel Load Balancing in "
+    "Mixture-of-Experts Serving in vLLM"
+)
 prs.core_properties.subject = "ILP modeling and real-system experiments for vLLM PR #52641"
 prs.core_properties.author = "DOCCA0"
 prs.core_properties.keywords = "vLLM, EPLB, expert migration, ILP, NIXL, profiling"

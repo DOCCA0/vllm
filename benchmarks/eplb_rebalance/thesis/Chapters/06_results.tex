@@ -1,6 +1,6 @@
 \label{ch:results}
 
-\section{End-to-end serving results}
+\subsection{End-to-end serving results}
 
 \Cref{tab:e2e-results} reports the clean A/B measurement. Both conditions
 completed all 500 requests. Enabling batching shortened total benchmark
@@ -51,7 +51,7 @@ requests. TPOT improves because decode continues throughout asynchronous
 migration. The result does not isolate which inference communication operation
 benefited; it measures the user-visible aggregate effect.
 
-\section{Network traffic}
+\subsection{Network traffic}
 
 The head-node P99 of aggregate RX+TX traffic decreased from 599.81 MB/s to
 538.40 MB/s, a reduction of 10.24\%. This is the largest relative change among
@@ -81,7 +81,7 @@ scheduler enforces the same rank-degree constraint globally, lower bursts are
 plausible on other ranks, but per-node counters are necessary to verify that
 claim.
 
-\section{Scheduler profiling}
+\subsection{Scheduler profiling}
 \label{sec:profile-results}
 
 All four ranks recorded 34 calls to the cycle-wide scheduling range during the
@@ -137,7 +137,7 @@ all downstream effects. It nevertheless answers the maintainer-facing systems
 question of whether the additional Python scheduling work is of the same order
 as the apparent benefit. It is not.
 
-\section{Answering the research questions}
+\subsection{Answering the research questions}
 
 \paragraph{RQ1: representation.}
 The directed migration-flow graph captures endpoint contention cleanly, while
@@ -164,7 +164,7 @@ and NIC P99 decreased by 10.24\%. Scheduler profiling found a conservative
 cost-to-saved ratio of 0.285\%. These results are consistent with reduced
 migration interference and justify the implementation for this environment.
 
-\section{Discussion}
+\subsection{Discussion}
 
 The results illustrate why migration duration alone is the wrong optimization
 target for asynchronous EPLB. A scheduler can add communication rounds yet
@@ -186,9 +186,9 @@ reduces top-level scheduling invocations while preserving layer-wise migration.
 This separation between scheduling granularity and transfer granularity is a
 key engineering result of the work.
 
-\section{Threats to validity}
+\subsection{Threats to validity}
 
-\subsection{Internal validity}
+\subsubsection{Internal validity}
 
 The off run preceded the on run, so temporal drift, thermal state, background
 load, or network state may contribute to the difference. Fresh servers and an
@@ -203,7 +203,7 @@ traffic. A packet or transport-level trace and counters on every node would
 strengthen causal attribution. Still, the lower NIC P99 and favorable serving
 metrics are mutually consistent.
 
-\subsection{Construct validity}
+\subsubsection{Construct validity}
 
 The ILP slowdown equation is a deliberately linear surrogate. Queueing and
 protocol effects are nonlinear, and flow weights count experts rather than
@@ -217,7 +217,7 @@ deterministic but removes natural variation. Prefix caching is enabled, which
 improves realism relative to disabling it, although random prefixes offer
 limited sharing.
 
-\subsection{External validity}
+\subsubsection{External validity}
 
 The cluster has four older GPUs and \SI{10}{Gb/s} Ethernet without RDMA.
 Production systems may use NVLink within nodes and 100--400 Gb/s RDMA between
@@ -230,7 +230,7 @@ The code supports the vLLM communicator abstraction, but backend-specific
 progress and synchronization behavior can change batch overlap. Separate
 evaluation is needed for Gloo and future NIXL versions.
 
-\subsection{Conclusion validity}
+\subsubsection{Conclusion validity}
 
 The results are effect estimates from a single A/B pair, not confidence
 intervals. The thesis consequently avoids terms such as ``statistically
