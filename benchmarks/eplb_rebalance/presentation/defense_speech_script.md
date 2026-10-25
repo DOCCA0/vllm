@@ -1,6 +1,6 @@
 # MSc Thesis Defense — Speech Script
 
-This script follows the current 16-slide version of
+This script follows the current 17-slide version of
 `eplb_migration_batching.pptx`. The target speaking time is about 15 minutes.
 Text in square brackets is a presentation action and should not be spoken.
 
@@ -36,16 +36,18 @@ A Mixture-of-Experts model contains many expert networks. For each token, a
 router selects only a small subset of them. This is called top-k routing.
 
 With EP, experts are distributed across GPU ranks, and some experts may have
-redundant copies. EPLB has two tasks:
-- **Expert load balancing:** copy overloaded experts.
-- **Rank load balancing:** migrate experts from overloaded ranks to less busy
-  ranks.
+redundant copies. Because routing depends on the input, expert popularity and
+rank load can change over time.
 
-Because routing depends on the input, both expert popularity and rank load
-change over time. EPLB performs these two operations to keep the workload
-balanced.
+## Slide 4 — EPLB
 
-## Slide 4 — Qwen3 MoE Architecture
+EPLB means Expert Parallel Load Balancing. It dynamically balances expert
+workloads across GPUs.
+
+It has two main jobs. Expert load balancing copies overloaded experts. Rank
+load balancing migrates experts from overloaded ranks to less busy ranks.
+
+## Slide 5 — Qwen3 MoE Architecture
 
 This figure shows where the experts are located in Qwen3 model.
 
@@ -55,7 +57,7 @@ weights. It moves the expert weights in these MoE blocks.
 
 Essentially, a expert is a FFN.
 
-## Slide 5 — Sync and Async EPLB
+## Slide 6 — Sync and Async EPLB
 
 In synchronous EPLB, inference is paused during migration. In this case, one
 large batch can finish migration as fast as possible. Splitting it into several
@@ -69,26 +71,41 @@ Several batches make the migration itself slower. However, they reduce the
 traffic pressure of inference. Users care about inference latency,
 not expert migration time. This is the trade-off studied in this thesis.
 
-## Slide 6 — ILP Formulation
+## Slide 7 — ILP Formulation
 
 I first use an ILP to describe the scheduling problem. It is an offline
 reference and is not executed in the serving path.
 
 The primary objective is to lower the maximum inference time during migration.
-Here, T zero is the inference time without migration. C e is the capacity of
-link e. L e b is the migration load on link e in batch b. Rho is the inference traffic ratio. So, C e times one minus rho is the capacity still available for migration.
+T infer is the worst inference time predicted by the model.
 
+On the left are all variables and inputs. X p b tells whether flow p is placed
+in batch b. Y b tells whether batch b is active. W p is the number of experts
+inside flow p. F p e is the fraction of this flow routed through link e. C e is
+the link capacity. T zero is the inference time without migration. Rho is the
+inference traffic ratio.
 
-Now I will explain the three constraints.
+Now I will explain the five constraints.
+
 First, every flow runs exactly once.
+
 Second, a rank communicates with at most one peer in one batch. Therefore,
 flows in the same batch have disjoint endpoints.
-Third, the migration load L e b is the sum of the flow sizes routed through
-link e.
+
+Third, a flow can only use an active batch. Active batches must also be
+continuous. For example, we cannot use batch zero and batch two while leaving
+batch one empty.
+
+Fourth, L e b is the total migration load routed through link e in batch b.
+
+Fifth, the model uses this link load to set a lower bound on inference time.
+T zero is the baseline. C e times one minus rho is the link capacity remaining
+for migration. Higher migration load therefore produces a higher predicted
+inference time.
 
 The main goal is lower inference time, not minimum migration time.
 
-## Slide 7 — ILP Hotspot Example
+## Slide 8 — ILP Hotspot Example
 
 This example makes the model easier to understand.
 
@@ -99,7 +116,7 @@ The middle graph shows the unbatched case. All flows are submitted together.the 
 After ILP, the result is four batches.The inference time falls to 2.25.
 
 
-## Slide 8 — Online Design
+## Slide 9 — Online Design
 
 The ILP explains the problem and gives an exact result for small examples.
 However, ILP is expensive. So we will not use it in serving.
@@ -107,11 +124,11 @@ However, ILP is expensive. So we will not use it in serving.
 The production design keeps the most useful rule: flows in one batch should
 not share a rank.
 
-## Slide 9 — Greedy Algorithm
+## Slide 10 — Greedy Algorithm
 
 自由发挥
 
-## Slide 10 — Experimental Setup
+## Slide 11 — Experimental Setup
 
 I do this experiment on four nodes. Each node had one RTX 6000 GPU with 24
 GB memory. The nodes used 10-gigabit Ethernet, without RDMA.
@@ -125,54 +142,20 @@ input tokens, and 300 output tokens.
 
 The off and on cases used the same request stream. 
 
-## Slide 11 — E2E Results
+## Slide 12 — E2E Results
 
 自由发挥
 
-## Slide 12 — Serving Improvements
+## Slide 13 — Serving Improvements
 
 This chart presents the same result visually.
 
 
-## Slide 13 — NIC Traffic
+## Slide 14 — NIC Traffic
 
 I also measured network traffic.
 During the benchmark, we record the NIC traffic per second.
 So my feature can smooth the large traffic bursts. 
 
-## Slide 14 — Profiling Method
+## Slides 15–16 — Profiling
 自由发挥
-
-## Slide 15 — Profiling Results
-
-Each rank recorded 34 scheduler calls. The median cost is about seven to eight
-milliseconds per call. Remember that one call covers all 48 layers.
-
-The largest cumulative cost is 302.081 milliseconds on rank zero. In the clean
-E2E experiment, batching saved 105.932 seconds.
-
-So the conservative scheduler-cost-to-serving-saving ratio is only 0.285
-percent. The extra CPU work is very small compared with the measured serving
-benefit.
-
-This is not a full causal breakdown. However, it directly answers whether the
-greedy scheduling overhead is worth paying in this experiment.
-
-## Slide 16 — Conclusion and Questions
-
-To conclude, asynchronous expert migration should be scheduled together with
-serving. It should not be treated only as a copy task that must finish as fast
-as possible.
-
-This work uses an offline ILP to explain the contention objective. It then
-turns the main constraint into a lightweight, rank-disjoint greedy scheduler
-for vLLM.
-
-In the experiment, throughput improved by 2.28 percent. P50 end-to-end latency
-improved by 3.18 percent. NIC P99 traffic fell by 10.24 percent. The measured
-scheduler cost was only 0.285 percent of the serving time saved.
-
-The implementation is opt-in for asynchronous EPLB and disabled for
-synchronous EPLB. It was merged into upstream vLLM.
-
-Thank you for listening. I am happy to answer your questions.

@@ -810,9 +810,17 @@ def build_link_mermaid_diagram(
             gpu_servers[rank] = adjacent_servers.pop()
 
     lines = [
+        '%%{init: {"themeVariables": {"fontSize": "26px"}, '
+        '"flowchart": {"nodeSpacing": 18, "rankSpacing": 32}}}%%',
         "flowchart LR",
-        "  classDef gpu fill:#e9fff5,stroke:#23734d,stroke-width:2px;",
-        "  classDef fabric fill:#fff4df,stroke:#9a6200,stroke-width:2px;",
+        (
+            "  classDef gpu fill:#e9fff5,stroke:#23734d,stroke-width:2px,"
+            "font-size:26px;"
+        ),
+        (
+            "  classDef fabric fill:#fff4df,stroke:#9a6200,stroke-width:2px,"
+            "font-size:26px;"
+        ),
         "  subgraph LINKS[Two-tier communication links]",
         "    direction LR",
     ]
