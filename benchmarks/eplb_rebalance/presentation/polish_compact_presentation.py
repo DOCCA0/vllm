@@ -207,11 +207,11 @@ def rebuild_ilp_formulation(prs: Presentation) -> None:
             "assign": r"\sum_{b\in B}x_{p,b}=1,\qquad \forall p\in P",
             "endpoint": (r"\sum_{p:r\in p}x_{p,b}\le 1,\qquad \forall r,\;b"),
             "activation": (r"x_{p,b}\le y_b,\qquad y_b\ge y_{b+1}"),
-            "load": r"L_{e,b}=\sum_{p\in P}w_p f_{p,e}x_{p,b}",
+            "load": r"L_{\ell,b}=\sum_{p\in P}w_p f_{p,\ell}x_{p,b}",
             "slowdown": (
                 r"T_{\mathrm{infer}}\ge T_0\left(1+"
-                r"\frac{L_{e,b}}{C_e(1-\rho)}\right),"
-                r"\quad \forall e,b"
+                r"\frac{L_{\ell,b}}{C_\ell(1-\rho)}\right),"
+                r"\quad \forall \ell,b"
             ),
             "x_variable": r"x_{p,b}\in\{0,1\}",
             "y_variable": r"y_b\in\{0,1\}",

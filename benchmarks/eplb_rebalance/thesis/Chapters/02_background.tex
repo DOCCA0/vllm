@@ -61,12 +61,12 @@ the rank that continues the model computation. EP avoids replicating every
 expert on every device, but introduces all-to-all-style communication and a
 dependence on balanced rank workloads.
 
-Let $a_{l,e}$ be the number of token assignments to logical expert $e$ in layer
-$l$ over an observation window. If rank $r$ hosts a set $H_{l,r}$, a simple
+Let $a_{k,e}$ be the number of token assignments to logical expert $e$ in layer
+$k$ over an observation window. If rank $r$ hosts a set $H_{k,r}$, a simple
 load estimate is
 
 \begin{equation}
-  L_{l,r}=\sum_{e\in H_{l,r}} a_{l,e}.
+  U_{k,r}=\sum_{e\in H_{k,r}} a_{k,e}.
 \end{equation}
 
 Even if training encourages globally balanced routing, a finite serving window

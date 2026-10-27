@@ -77,10 +77,10 @@ x_{p,b}\le y_b,
 y_b\ge y_{b+1}.
 $$
 
-The migration load on link $e$ in batch $b$ is:
+The migration load on link $\ell$ in batch $b$ is:
 
 $$
-L_{e,b}=\sum_{p\in P}w_pf_{p,e}x_{p,b}.
+L_{\ell,b}=\sum_{p\in P}w_pf_{p,\ell}x_{p,b}.
 $$
 
 Let $T_0$ be `base_inference_time`, the inference time without migration, and
@@ -91,8 +91,8 @@ load relative to this remaining capacity:
 
 $$
 T_{infer}\ge
-T_0\left(1+\frac{L_{e,b}}{C_e(1-\rho)}\right),
-\qquad \forall e,\forall b.
+T_0\left(1+\frac{L_{\ell,b}}{C_\ell(1-\rho)}\right),
+\qquad \forall \ell,\forall b.
 $$
 
 Since this constraint covers every link and batch, minimizing $T_{infer}$ is
@@ -100,7 +100,7 @@ equivalent to:
 
 $$
 \min T_0\left(
-1+\max_{e,b}\frac{L_{e,b}}{C_e(1-\rho)}
+1+\max_{\ell,b}\frac{L_{\ell,b}}{C_\ell(1-\rho)}
 \right).
 $$
 
@@ -115,7 +115,7 @@ Migration time is reported for validation but is not optimized. For batch
 $b$:
 
 $$
-T_b=\max_e\frac{L_{e,b}}{C_e}.
+T_b=\max_\ell\frac{L_{\ell,b}}{C_\ell}.
 $$
 
 With per-call overhead $\delta=$ `batch_overhead`, the reported total is:

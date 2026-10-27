@@ -96,10 +96,10 @@ Third, a flow can only use an active batch. Active batches must also be
 continuous. For example, we cannot use batch zero and batch two while leaving
 batch one empty.
 
-Fourth, L e b is the total migration load routed through link e in batch b.
+Fourth, L ell b is the total migration load routed through link ell in batch b.
 
 Fifth, the model uses this link load to set a lower bound on inference time.
-T zero is the baseline. C e times one minus rho is the link capacity remaining
+T zero is the baseline. C ell times one minus rho is the link capacity remaining
 for migration. Higher migration load therefore produces a higher predicted
 inference time.
 

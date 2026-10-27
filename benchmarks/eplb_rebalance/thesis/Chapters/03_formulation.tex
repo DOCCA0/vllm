@@ -35,9 +35,10 @@ ownership.
 The offline model supports an explicit network graph and a compact two-tier
 topology. In the latter, GPUs connect to server endpoints through local links;
 server endpoints share a slower inter-server network. Let $\mathcal{L}$ be the
-set of routed links and $C_l>0$ the capacity of link $l$. Fixed shortest-path
-ECMP determines $f_{p,l}$, the fraction of flow $p$ routed over $l$. In the
-illustrative instance there is a single path for each flow, so $f_{p,l}$ is
+set of routed links and $C_\ell>0$ the capacity of link $\ell$. Fixed
+shortest-path ECMP determines $f_{p,\ell}$, the fraction of flow $p$ routed
+over $\ell$. In the illustrative instance there is a single path for each
+flow, so $f_{p,\ell}$ is
 binary.
 
 The model measures flow size in expert units rather than bytes. It therefore
@@ -45,7 +46,7 @@ assumes equal expert payloads within the layer. This matches the evaluated
 model architecture but would need extension for heterogeneous or quantized
 experts. Following the bottleneck and residual-bandwidth view used in coflow
 scheduling \cite{chowdhury2014varys}, it represents the bandwidth left by
-foreground inference as $C_l(1-\rho)$, where $\rho\in[0,1)$ is the fraction of
+foreground inference as $C_\ell(1-\rho)$, where $\rho\in[0,1)$ is the fraction of
 link capacity occupied by inference. Varys estimates residual bandwidth from
 measurements; the illustrative ILP instead uses one normalized $\rho$ for all
 links. It is therefore a scenario parameter, not a deployment-independent
@@ -88,10 +89,10 @@ batches to form a prefix:
   y_b &\geq y_{b+1}.
 \end{align}
 
-The migration load on routed link $l$ in batch $b$ is
+The migration load on routed link $\ell$ in batch $b$ is
 
 \begin{equation}
-  Q_{l,b}=\sum_{p\in P}w_p f_{p,l}x_{p,b}.
+  L_{\ell,b}=\sum_{p\in P}w_p f_{p,\ell}x_{p,b}.
 \end{equation}
 
 Let $T_0$ be inference time without migration. The model assumes slowdown is
@@ -99,8 +100,8 @@ linear in migration load relative to residual link capacity:
 
 \begin{equation}
   T_{\mathrm{infer}} \geq
-  T_0\left(1+\frac{Q_{l,b}}{C_l(1-\rho)}\right)
-  \qquad \forall l,b.
+  T_0\left(1+\frac{L_{\ell,b}}{C_\ell(1-\rho)}\right)
+  \qquad \forall \ell,b.
   \label{eq:slowdown}
 \end{equation}
 
@@ -131,7 +132,7 @@ make the trade-off visible, it reports a diagnostic. The duration of batch $b$
 is approximated by its bottleneck-link service time:
 
 \begin{equation}
-  T_b=\max_{l\in\mathcal{L}}\frac{Q_{l,b}}{C_l}.
+  T_b=\max_{\ell\in\mathcal{L}}\frac{L_{\ell,b}}{C_\ell}.
 \end{equation}
 
 Given a per-batch launch or synchronization overhead $\delta$, total migration

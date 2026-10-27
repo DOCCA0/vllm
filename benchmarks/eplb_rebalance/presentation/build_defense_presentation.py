@@ -82,7 +82,7 @@ def load_equations() -> dict[str, etree._Element]:
         ),
         "objective": (
             r"\min T_{\mathrm{infer}},\qquad T_{\mathrm{infer}}\ge "
-            r"T_0\left(1+\frac{Q_{l,b}}{C_l(1-\rho)}\right),"
+            r"T_0\left(1+\frac{L_{\ell,b}}{C_\ell(1-\rho)}\right),"
             r"\quad \forall l,b"
         ),
         "mask": (
