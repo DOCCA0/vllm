@@ -28,7 +28,7 @@
 \usepackage[export]{adjustbox}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds}
-\graphicspath{{./Images/}{../ILP/}{../results/serving_nixl_20260911_async_random500/}{../results/serving_nixl_20260911_async_random500_profile/}}
+\graphicspath{{./Images/}}
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{xcolor}
@@ -53,6 +53,7 @@
 \floatname{algorithm}{Algorithm}
 \lstdefinestyle{code}{
   basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\mdseries\ttfamily,
   breaklines=true,
   frame=single,
   columns=fullflexible,
@@ -84,7 +85,7 @@
 
 \input{Configuration_Files/config}
 
-\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\code}[1]{{\normalfont\ttfamily #1}}
 \newcommand{\SI}[2]{#1\,#2}
 \newcommand{\system}{contention-aware migration batching}
 \newcommand{\prnumber}{\#52641}
