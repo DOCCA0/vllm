@@ -316,7 +316,7 @@ def _clean_float(value: float) -> float:
 def solve_with_scipy(
     instructions: list[MigrationInstruction], config: ProblemConfig
 ) -> dict[str, Any]:
-    """Minimize worst-case inference time during rank-disjoint migration."""
+    """Lexicographically optimize inference time and active batches."""
 
     try:
         import numpy as np
@@ -372,22 +372,6 @@ def solve_with_scipy(
             )
     for b in range(batch_count - 1):
         rows.append(({active_idx(b): -1.0, active_idx(b + 1): 1.0}, -float("inf"), 0.0))
-
-    # PR #52641 coalesces each directed pair into one flow and permits at most
-    # one peer per rank in each batch.
-    ranks = sorted(
-        {inst.src_rank for inst in instructions}
-        | {inst.dst_rank for inst in instructions}
-    )
-    for b in range(batch_count):
-        for rank in ranks:
-            terms = {
-                x_idx(i, b): 1.0
-                for i in representatives
-                if rank in (instructions[i].src_rank, instructions[i].dst_rank)
-            }
-            if terms:
-                rows.append((terms, -float("inf"), 1.0))
 
     # Inference time is the baseline time multiplied by one plus the largest
     # normalized migration load on any concurrently used link.
@@ -471,8 +455,8 @@ def solve_with_scipy(
     inference_result = run_milp(inference_objective)
     optimal_inference_time = float(inference_result.fun)
 
-    # Inference time is the only optimization target. Batch count is merely a
-    # deterministic tie-break among schedules with the same optimal time.
+    # Preserve the primary optimum while removing unnecessary batches and
+    # their fixed execute/synchronization overhead.
     batch_objective = np.zeros(var_count, dtype=float)
     batch_objective[active_offset:inference_time_idx] = 1.0
     result = run_milp(
@@ -485,6 +469,7 @@ def solve_with_scipy(
             )
         ],
     )
+    optimal_batch_count = int(round(float(result.fun)))
 
     schedule: list[dict[str, Any]] = []
     values = result.x
@@ -530,6 +515,7 @@ def solve_with_scipy(
     return {
         "objective": {
             "inference_time": _clean_float(optimal_inference_time),
+            "batch_count": optimal_batch_count,
         },
         "unbatched_lower_bound": unbatched,
         "optimal": optimal,
@@ -603,16 +589,9 @@ def summarize_batches(
         active = [item for item in schedule if item["start"] <= t < item["end"]]
         if not active:
             continue
-        rank_loads: dict[int, int] = {}
-        for item in active:
-            rank_loads[item["src"]] = rank_loads.get(item["src"], 0) + 1
-            rank_loads[item["dst"]] = rank_loads.get(item["dst"], 0) + 1
-        max_rank_load = max(rank_loads.values())
         batch_summary: dict[str, Any] = {
             "batch": t,
             "batch_time": 0.0,
-            "max_rank_load": max_rank_load,
-            "rank_load": dict(sorted(rank_loads.items())),
             "active": [
                 f"{_schedule_expert_label(item)}:{item['src']}->{item['dst']}"
                 for item in active
@@ -723,7 +702,7 @@ def build_after_mermaid_diagram(schedule: list[dict[str, Any]]) -> str:
             | {int(item["dst"]) for item in batch_items}
         )
         lines.append(f"    subgraph BA{batch}[Batch {batch}]")
-        lines.append("      direction LR")
+        lines.append("      direction TB")
         for rank in ranks:
             node = _mermaid_id("after", batch, "rank", rank)
             lines.append(f'      {node}["Rank {rank}"]')
@@ -813,10 +792,7 @@ def build_link_mermaid_diagram(
         '%%{init: {"themeVariables": {"fontSize": "26px"}, '
         '"flowchart": {"nodeSpacing": 18, "rankSpacing": 32}}}%%',
         "flowchart LR",
-        (
-            "  classDef gpu fill:#e9fff5,stroke:#23734d,stroke-width:2px,"
-            "font-size:26px;"
-        ),
+        ("  classDef gpu fill:#e9fff5,stroke:#23734d,stroke-width:2px,font-size:26px;"),
         (
             "  classDef fabric fill:#fff4df,stroke:#9a6200,stroke-width:2px,"
             "font-size:26px;"

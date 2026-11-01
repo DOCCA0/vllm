@@ -1,14 +1,15 @@
 ### ILP mathematical model
 
-The model has one optimization target:
+The model uses two lexicographic objectives. The primary objective is:
 
 $$
-\min T_{infer}
+\min T_{\mathrm{infer}}
 $$
 
-where $T_{infer}$ is the worst inference time observed while expert migration
-is running. The model uses one global `inference_traffic` ratio instead of
-separate local/network ratios, and has no weighted multi-objective function.
+where $T_{\mathrm{infer}}$ is the worst inference time observed while expert
+migration is running. Only after fixing its optimum does the solver minimize
+the number of batches. This strict ordering does not trade inference time for
+fewer batches and requires no arbitrary weights.
 
 ### Network
 
@@ -51,7 +52,7 @@ y_b =
 \end{cases}
 $$
 
-$T_{infer}$ is the single continuous objective variable.
+$T_{\mathrm{infer}}$ is the continuous inference-time variable.
 
 ### Constraints
 
@@ -62,13 +63,6 @@ $$
 \qquad \forall p\in P.
 $$
 
-Following PR #52641, a rank communicates with at most one peer in a batch:
-
-$$
-\sum_{p:r\in p}x_{p,b}\le1,
-\qquad \forall r,\forall b.
-$$
-
 Assignments activate their batch, and active batches form a prefix:
 
 $$
@@ -77,10 +71,10 @@ x_{p,b}\le y_b,
 y_b\ge y_{b+1}.
 $$
 
-The migration load on link $\ell$ in batch $b$ is:
+The migration load on link $e$ in batch $b$ is:
 
 $$
-L_{\ell,b}=\sum_{p\in P}w_pf_{p,\ell}x_{p,b}.
+L_{e,b}=\sum_{p\in P}w_pf_{p,e}x_{p,b}.
 $$
 
 Let $T_0$ be `base_inference_time`, the inference time without migration, and
@@ -90,24 +84,32 @@ $1-\rho$. The model assumes inference slowdown grows linearly with migration
 load relative to this remaining capacity:
 
 $$
-T_{infer}\ge
-T_0\left(1+\frac{L_{\ell,b}}{C_\ell(1-\rho)}\right),
-\qquad \forall \ell,\forall b.
+T_{\mathrm{infer}}\ge
+T_0\left(1+\frac{L_{e,b}}{C_e(1-\rho)}\right),
+\qquad \forall e,\forall b.
 $$
 
-Since this constraint covers every link and batch, minimizing $T_{infer}$ is
-equivalent to:
+Since this constraint covers every link and batch, minimizing
+$T_{\mathrm{infer}}$ is equivalent to:
 
 $$
 \min T_0\left(
-1+\max_{\ell,b}\frac{L_{\ell,b}}{C_\ell(1-\rho)}
+1+\max_{e,b}\frac{L_{e,b}}{C_e(1-\rho)}
 \right).
 $$
 
-The ILP therefore directly spreads migrations to reduce the worst link
-contention and minimize predicted inference time. After the optimum
-$T_{infer}$ is fixed, the solver minimizes batch count only as a tie-break;
-batch count is not a second modeling objective.
+The first solve produces $T_{\mathrm{infer}}^*$. The second solve preserves
+that optimum and removes unnecessary batches:
+
+$$
+B^*=\min\sum_{b\in B}y_b
+\quad\text{s.t.}\quad
+T_{\mathrm{infer}}\le T_{\mathrm{infer}}^*+\epsilon.
+$$
+
+Thus the priorities are: protect inference first, then avoid unnecessary fixed
+per-batch execution and synchronization overhead. Minimizing batch count is
+only a tie-break and is not claimed to minimize complete migration time.
 
 ### Migration-time diagnostic
 
@@ -115,18 +117,18 @@ Migration time is reported for validation but is not optimized. For batch
 $b$:
 
 $$
-T_b=\max_\ell\frac{L_{\ell,b}}{C_\ell}.
+T_b=\max_e\frac{L_{e,b}}{C_e}.
 $$
 
 With per-call overhead $\delta=$ `batch_overhead`, the reported total is:
 
 $$
-T_{migration}=\sum_bT_b+\delta\sum_by_b.
+T_{\mathrm{migration}}=\sum_bT_b+\delta\sum_by_b.
 $$
 
-This makes the intended trade-off explicit: the optimal schedule lowers
-inference time by spreading contention across batches, while total migration
-time increases.
+This diagnostic separates variable transfer time from fixed per-batch
+overhead. It is reported for validation but is not part of the lexicographic
+objectives.
 
 ### Example result
 
@@ -135,9 +137,9 @@ For `example_hotspot.json`:
 | Metric | Unbatched | ILP optimal |
 |---|---:|---:|
 | Inference time | 4.75 | 2.25 |
-| Migration time | 1.55 | 2.2 |
+| Migration time | 1.55 | 1.65 |
 | Peak link utilization | 1.5 | 0.5 |
-| Batches | 1 | 4 |
+| Batches | 1 | 3 |
 
 ### Run
 

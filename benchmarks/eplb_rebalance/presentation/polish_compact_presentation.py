@@ -19,6 +19,7 @@ from pptx.util import Inches, Pt
 
 DECK = Path(__file__).with_name("eplb_migration_batching.pptx")
 ILP_LINK_IMAGE = DECK.parent.parent / "ILP" / "example_hotspot_links.png"
+ILP_AFTER_IMAGE = DECK.parent.parent / "ILP" / "example_hotspot_after.png"
 
 
 def OxmlElement(tag: str) -> etree._Element:  # noqa: N802
@@ -203,15 +204,19 @@ def rebuild_ilp_formulation(prs: Presentation) -> None:
     """Present the README model with consistent symbols and editable math."""
     formulas = load_equations(
         {
-            "objective": r"\min T_{\mathrm{infer}}",
+            "objective_inference": r"\min T_{\mathrm{infer}}",
+            "objective_batches": (
+                r"\min \sum_{b\in B}y_b "
+                r"\quad \mathrm{s.t.}\quad "
+                r"T_{\mathrm{infer}}\le T_{\mathrm{infer}}^*+\epsilon"
+            ),
             "assign": r"\sum_{b\in B}x_{p,b}=1,\qquad \forall p\in P",
-            "endpoint": (r"\sum_{p:r\in p}x_{p,b}\le 1,\qquad \forall r,\;b"),
             "activation": (r"x_{p,b}\le y_b,\qquad y_b\ge y_{b+1}"),
-            "load": r"L_{\ell,b}=\sum_{p\in P}w_p f_{p,\ell}x_{p,b}",
+            "load": r"L_{e,b}=\sum_{p\in P}w_p f_{p,e}x_{p,b}",
             "slowdown": (
                 r"T_{\mathrm{infer}}\ge T_0\left(1+"
-                r"\frac{L_{\ell,b}}{C_\ell(1-\rho)}\right),"
-                r"\quad \forall \ell,b"
+                r"\frac{L_{e,b}}{C_e(1-\rho)}\right),"
+                r"\quad \forall e,b"
             ),
             "x_variable": r"x_{p,b}\in\{0,1\}",
             "y_variable": r"y_b\in\{0,1\}",
@@ -238,7 +243,7 @@ def rebuild_ilp_formulation(prs: Presentation) -> None:
         orange = RGBColor(230, 126, 34)
         green = RGBColor(19, 143, 95)
 
-        add_panel(slide, 0.62, 1.62, 3.18, 4.96, blue)
+        add_panel(slide, 0.62, 1.62, 3.18, 5.06, blue)
         heading = slide.shapes.add_textbox(
             Inches(0.86), Inches(1.78), Inches(2.7), Inches(0.28)
         )
@@ -281,7 +286,7 @@ def rebuild_ilp_formulation(prs: Presentation) -> None:
             ("baseline_inputs", "baseline time; inference share"),
         ]
         for index, (equation_key, meaning) in enumerate(inputs):
-            y = 4.5 + index * 0.38
+            y = 4.5 + index * 0.42
             add_equation(
                 slide,
                 formulas[equation_key],
@@ -289,91 +294,83 @@ def rebuild_ilp_formulation(prs: Presentation) -> None:
                 y,
                 1.05,
                 0.3,
-                size=13,
+                size=12,
                 color=navy,
             )
             meaning_box = slide.shapes.add_textbox(
                 Inches(1.75), Inches(y), Inches(1.8), Inches(0.32)
             )
-            set_text(meaning_box, meaning, 9.8, ink)
+            set_text(meaning_box, meaning, 9.5, ink)
 
-        tie_break = slide.shapes.add_textbox(
-            Inches(0.82), Inches(6.05), Inches(2.76), Inches(0.32)
+        add_panel(slide, 4.08, 1.62, 8.5, 1.0, green)
+        objective_label = slide.shapes.add_textbox(
+            Inches(4.3), Inches(1.72), Inches(2.42), Inches(0.72)
         )
         set_text(
-            tie_break,
-            "Tie-break: minimize active batches after fixing Tᵢₙfₑᵣ",
-            9.5,
-            orange,
+            objective_label,
+            "LEXICOGRAPHIC OBJECTIVES\n1  inference\n2  batches",
+            10.2,
+            green,
             bold=True,
-            align=PP_ALIGN.CENTER,
         )
-
-        add_panel(slide, 4.08, 1.62, 8.5, 0.72, green)
-        objective_label = slide.shapes.add_textbox(
-            Inches(4.3), Inches(1.78), Inches(2.15), Inches(0.3)
-        )
-        set_text(objective_label, "PRIMARY OBJECTIVE", 11.5, green, bold=True)
-        add_equation(
-            slide,
-            formulas["objective"],
-            7.1,
-            1.74,
-            3.4,
-            0.4,
-            size=17,
-            color=ink,
-        )
+        objective_rows = [
+            ("objective_inference", 1.76, 15),
+            ("objective_batches", 2.13, 10),
+        ]
+        for key, y, size in objective_rows:
+            add_equation(
+                slide,
+                formulas[key],
+                6.65,
+                y,
+                5.55,
+                0.3,
+                size=size,
+                color=ink,
+            )
 
         constraint_rows = [
             (
-                2.52,
+                2.84,
                 "1   Every flow runs exactly once",
                 "assign",
                 blue,
                 14,
             ),
             (
-                3.32,
-                "2   At most one peer per rank and batch",
-                "endpoint",
-                purple,
-                13,
-            ),
-            (
-                4.12,
-                "3   Activate used batches; no gaps",
+                3.75,
+                "2   Activate used batches; no gaps",
                 "activation",
                 green,
                 14,
             ),
             (
-                4.92,
-                "4   Migration load on each link",
+                4.66,
+                "3   Migration load on each link",
                 "load",
                 orange,
                 14,
             ),
             (
-                5.72,
-                "5   Inference-time lower bound",
+                5.57,
+                "4   Inference-time lower bound",
                 "slowdown",
                 green,
                 12,
             ),
         ]
         for y, label, key, color, size in constraint_rows:
-            add_panel(slide, 4.08, y, 8.5, 0.7, color)
+            add_panel(slide, 4.08, y, 8.5, 0.72, color)
             label_box = slide.shapes.add_textbox(
-                Inches(4.28), Inches(y + 0.08), Inches(2.9), Inches(0.5)
+                Inches(4.28), Inches(y + 0.1), Inches(3.0), Inches(0.5)
             )
-            set_text(label_box, label, 10.7, color, bold=True)
+            set_text(label_box, label, 10.2, color, bold=True)
             add_equation(
                 slide,
                 formulas[key],
-                6.95,
-                y + 0.08,
-                5.25,
+                7.05,
+                y + 0.1,
+                5.15,
                 0.5,
                 size=size,
                 color=ink,
@@ -585,6 +582,53 @@ def replace_ilp_link_image(prs: Presentation) -> None:
         slide.shapes.add_picture(
             str(ILP_LINK_IMAGE), new_left, top, width=new_width, height=height
         )
+        return
+
+
+def replace_ilp_schedule_image(prs: Presentation) -> None:
+    """Refresh the optimized schedule and its automatically selected K."""
+    for slide in prs.slides:
+        if not any(
+            shape.has_text_frame and shape.text.strip() == "ILP Hotspot Example"
+            for shape in slide.shapes
+        ):
+            continue
+        pictures = [
+            shape
+            for shape in slide.shapes
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE
+        ]
+        if not pictures:
+            return
+        target = max(pictures, key=lambda shape: shape.left)
+        left, top, width, height = (
+            target.left,
+            target.top,
+            target.width,
+            target.height,
+        )
+        remove_shape(target)
+        with Image.open(ILP_AFTER_IMAGE) as image:
+            new_width = int(height * image.width / image.height)
+        new_left = left + (width - new_width) // 2
+        slide.shapes.add_picture(
+            str(ILP_AFTER_IMAGE), new_left, top, width=new_width, height=height
+        )
+        for shape in slide.shapes:
+            if not shape.has_text_frame or not (
+                "Inference time  2.25" in shape.text
+                or shape.text.startswith("Inference 2.25")
+            ):
+                continue
+            set_text(
+                shape,
+                "Inference 2.25 · 3 batches",
+                11,
+                RGBColor(20, 52, 91),
+                bold=True,
+                align=PP_ALIGN.CENTER,
+            )
+            break
         return
 
 
@@ -928,6 +972,7 @@ def main() -> None:
     rebuild_profiling_method(prs)
     rebuild_greedy_algorithm(prs)
     replace_ilp_link_image(prs)
+    replace_ilp_schedule_image(prs)
     enlarge_small_text(prs)
     prs.save(DECK)
     remove_legacy_ilp_math(DECK)

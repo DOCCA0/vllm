@@ -71,49 +71,51 @@ Several batches make the migration itself slower. However, they reduce the
 traffic pressure of inference. Users care about inference latency,
 not expert migration time. This is the trade-off studied in this thesis.
 
-## Slide 7 — ILP Formulation
-
-I first use an ILP to describe the scheduling problem. It is an offline
-reference and is not executed in the serving path.
-
-The primary objective is to lower the maximum inference time during migration.
-T infer is the worst inference time predicted by the model.
-
-On the left are all variables and inputs. X p b tells whether flow p is placed
-in batch b. Y b tells whether batch b is active. W p is the number of experts
-inside flow p. F p e is the fraction of this flow routed through link e. C e is
-the link capacity. T zero is the inference time without migration. Rho is the
-inference traffic ratio.
-
-Now I will explain the five constraints.
-
-First, every flow runs exactly once.
-
-Second, a rank communicates with at most one peer in one batch. Therefore,
-flows in the same batch have disjoint endpoints.
-
-Third, a flow can only use an active batch. Active batches must also be
-continuous. For example, we cannot use batch zero and batch two while leaving
-batch one empty.
-
-Fourth, L ell b is the total migration load routed through link ell in batch b.
-
-Fifth, the model uses this link load to set a lower bound on inference time.
-T zero is the baseline. C ell times one minus rho is the link capacity remaining
-for migration. Higher migration load therefore produces a higher predicted
-inference time.
-
-The main goal is lower inference time, not minimum migration time.
-
-## Slide 8 — ILP Hotspot Example
+## Slide 7 — ILP Hotspot Example
 
 This example makes the model easier to understand.
 
 The left graph shows eight GPU ranks on four servers.
 
-The middle graph shows the unbatched case. All flows are submitted together.the inference time is 4.75.
+The middle graph shows the unbatched case. All flows are submitted together,
+and the modeled inference time is 4.75.
 
-After ILP, the result is four batches.The inference time falls to 2.25.
+The optimized schedule keeps the minimum inference time of 2.25. Among all
+schedules with that value, it uses the minimum three batches.
+
+## Slide 8 — ILP Formulation
+
+I first use an ILP to describe the scheduling problem. It is an offline
+reference and is not executed in the serving path.
+
+The objectives are applied in a strict order. First, the model minimizes the
+worst inference time during migration. Second, while keeping that optimum, it
+minimizes the number of active batches. There is no weighted trade-off between
+these objectives.
+
+On the left are all variables and inputs. X p b tells whether flow p is placed
+in batch b. Y b tells whether batch b is active. W p is the number of experts
+inside flow p. F p e is the fraction routed through link e. C e is the link
+capacity. T zero is the inference time without migration. Rho is the inference
+traffic ratio.
+
+Now I will explain the five constraints.
+
+First, every flow runs exactly once.
+
+Second, a flow can only use an active batch. Active batches must also be
+continuous. For example, we cannot use batch zero and batch two while leaving
+batch one empty.
+
+Third, L e b is the total migration load routed through link e in batch b.
+
+Fourth, the model uses this link load to set a lower bound on inference time.
+T zero is the baseline. C e times one minus rho is the link capacity remaining
+for migration. Higher migration load therefore produces a higher predicted
+inference time.
+
+The main goal remains lower inference time. Fewer batches are only a tie-break
+after the primary optimum is fixed.
 
 
 ## Slide 9 — Online Design
