@@ -10,16 +10,15 @@ share resources, so lower peak contention can be worth additional transfer
 rounds.
 
 An offline ILP formalized this trade-off using flow-to-batch assignments,
-rank-degree constraints, routed link load, and a worst-case inference-time
-surrogate. It computes a constrained optimum after imposing the same
-rank-disjoint-flow policy as the deployed design; it does not establish that
-this concurrency limit is universally optimal. In an illustrative hotspot, the
-constrained schedule reduced normalized
-peak utilization from 1.5 to 0.5 and modeled inference time from 4.75 to 2.25,
-while increasing estimated migration time from 1.55 to 2.20. The purpose of the
-model was explanatory: it established that the apparent contradiction between
-``more batches'' and ``faster serving'' disappears when the objectives are
-separated.
+routed link load, and a worst-case inference-time surrogate. It first minimizes
+modeled inference time, then minimizes active batches without degrading the
+primary optimum. In an illustrative hotspot, the resulting schedule reduced
+normalized peak utilization from 1.5 to 0.5 and modeled inference time from
+4.75 to 2.25, while increasing estimated migration time from 1.55 to 1.65 and
+using three batches. The purpose of the model was explanatory: it established
+that the apparent contradiction between ``more batches'' and ``faster
+serving'' disappears when the objectives are separated. The rank-disjoint rule
+is an online engineering choice rather than a constraint of the updated ILP.
 
 The deployed scheduler translates that insight into deterministic first-fit
 edge coloring. Remote migrations are coalesced by ordered rank pair, and every

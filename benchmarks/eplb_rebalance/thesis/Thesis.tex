@@ -130,8 +130,8 @@ latency-sensitive inference traffic share the same network resources.
 This thesis studies the network interference created when many point-to-point
 expert migrations are submitted simultaneously. It first formulates migration
 scheduling as an integer linear program (ILP) that minimizes the worst modeled
-inference time under link contention, subject to a hard rank-disjoint-flow
-constraint. The formulation exposes the central
+inference time under link contention, then minimizes the number of active
+batches without degrading that primary optimum. The formulation exposes the central
 trade-off: spreading transfers over several batches reduces peak link load but
 can lengthen the migration itself. Based on this insight, a lightweight online
 scheduler is designed for vLLM. Expert transfers are represented as a rank
@@ -174,10 +174,11 @@ condividono quindi le stesse risorse di rete.
 Questa tesi analizza l'interferenza di rete causata dall'invio simultaneo di
 molte migrazioni punto-punto. Il problema viene inizialmente formulato come un
 programma lineare intero (ILP), con l'obiettivo di minimizzare il peggior tempo
-di inferenza modellato in presenza di contesa sui link. La formulazione mette
-in evidenza il compromesso fondamentale: distribuire i trasferimenti su più
-batch riduce il picco di traffico, ma può aumentare la durata complessiva della
-migrazione. Sulla base di questa osservazione è stato progettato uno scheduler
+di inferenza modellato in presenza di contesa sui link; un secondo obiettivo
+minimizza il numero di batch senza peggiorare l'ottimo primario. La formulazione
+mette in evidenza il compromesso fondamentale: distribuire i trasferimenti su
+più batch riduce il picco di traffico, ma può aumentare la durata complessiva
+della migrazione. Sulla base di questa osservazione è stato progettato uno scheduler
 online leggero per vLLM. I trasferimenti sono rappresentati come un multigrafo
 di comunicazione tra rank, aggregati per coppia diretta e raggruppati con un
 algoritmo greedy in batch nei quali ogni rank partecipa al massimo a un flusso

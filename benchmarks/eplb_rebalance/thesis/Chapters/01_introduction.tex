@@ -41,13 +41,10 @@ schedule that gives users the best latency while migration is in progress.
 The distinction is especially important in a multi-node deployment whose
 network is slower than local accelerator memory. Expert migration is a
 background maintenance operation; the foreground objective is serving quality.
-The central hypothesis of this work is therefore:
-
-\begin{quote}
-Limiting the number of simultaneous migration peers per rank can reduce network
-bursts enough to improve foreground serving, even when doing so introduces
-additional migration rounds.
-\end{quote}
+The central hypothesis of this work is therefore that limiting the number of
+simultaneous migration peers per rank can reduce network bursts enough to
+improve foreground serving, even when doing so introduces additional migration
+rounds.
 
 \section{Research questions}
 
@@ -85,12 +82,11 @@ This work makes the following contributions.
   concurrent inference.
 
   \item It formulates contention-aware migration scheduling as an \gls{ilp}.
-  The model assigns coalesced directed rank-pair flows to batches, constrains
-  each rank to one incident flow per batch, estimates routed link load, and
-  minimizes the worst modeled inference time. This is an exact optimum only
-  within the hard rank-disjoint-flow policy and the stated linear model. An illustrative
-  eight-rank topology exposes the trade-off rather than claiming a calibrated
-  latency predictor or proving that rank-disjoint scheduling is universally best.
+  The model assigns coalesced directed rank-pair flows to batches, estimates
+  routed link load, and first minimizes the worst modeled inference time. A
+  second solve minimizes the number of batches without degrading that primary
+  optimum. An illustrative eight-rank topology exposes the trade-off rather
+  than claiming a calibrated latency predictor.
 
   \item It designs a production-oriented greedy scheduler. The problem is
   reduced to deterministic first-fit edge coloring of a communication graph.

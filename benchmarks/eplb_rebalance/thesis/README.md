@@ -8,7 +8,7 @@ makeglossaries Thesis
 latexmk -pdf -interaction=nonstopmode -halt-on-error Thesis.tex
 ```
 
-The generated `Thesis.pdf` has 58 PDF pages including front matter,
+The generated `Thesis.pdf` has 60 PDF pages including front matter,
 bibliography, appendices, acronym/list pages, acknowledgements, and two-sided
 blank pages. Its six main chapters follow the reference thesis structure:
 introduction, background, related work, proposed system, experimental
@@ -23,7 +23,7 @@ Final reported data come only from:
 - `../results/serving_nixl_20260911_async_random500/`
 - `../results/serving_nixl_20260911_async_random500_profile/`
 
-The ILP is an offline constrained optimum with a fixed rank-disjoint-flow
-limit. The merged implementation uses deterministic greedy grouping under the
-same limit; the thesis does not claim that this concurrency limit is
-universally optimal.
+The ILP is an offline two-stage lexicographic optimum: it first minimizes the
+worst modeled inference time, then minimizes active batches while preserving
+that optimum. It does not impose the fixed rank-disjoint-flow limit used by the
+merged deterministic greedy implementation.
