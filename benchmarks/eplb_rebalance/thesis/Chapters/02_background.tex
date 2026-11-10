@@ -41,7 +41,9 @@ capacity from active arithmetic. GShard demonstrated large-scale conditional
 computation with automatic sharding \cite{lepikhin2020gshard}; Switch
 Transformer simplified routing to one expert per token and highlighted both
 the scaling opportunity and the communication and load-balancing challenges
-\cite{fedus2021switch}. Recent open models continue this direction. Qwen3
+\cite{fedus2021switch}. GLaM and ST-MoE further demonstrated that sparse expert
+models can scale capacity while retaining practical training and transfer
+quality \cite{du2022glam,zoph2022stmoe}. Recent open models continue this direction. Qwen3
 includes dense and MoE variants \cite{yang2025qwen3}, while DeepSeek-V3 uses a
 large sparse architecture and an auxiliary-loss-free training-time balancing
 strategy \cite{deepseek2024v3}.
@@ -59,7 +61,10 @@ In \gls{ep}, experts are distributed across ranks. A token is dispatched to
 the ranks holding its selected experts; expert outputs are then returned to
 the rank that continues the model computation. EP avoids replicating every
 expert on every device, but introduces all-to-all-style communication and a
-dependence on balanced rank workloads.
+dependence on balanced rank workloads. DeepSpeed-MoE illustrates how expert,
+tensor, and data parallelism can be combined for large-scale MoE inference,
+while also showing that communication and model layout are central systems
+concerns \cite{rajbhandari2022deepspeedmoe}.
 
 Let $a_{k,e}$ be the number of token assignments to logical expert $e$ in layer
 $k$ over an observation window. If rank $r$ hosts a set $H_{k,r}$, a simple
@@ -100,6 +105,12 @@ worker while inference continues. It transfers one layer and coordinates its
 activation with forward progress before proceeding. Here, the migration has
 more time, but interference with foreground work matters. This thesis changes
 only the asynchronous path and retains the synchronous behavior.
+
+\Cref{fig:eplb-loop} summarizes this control loop. Expert-load measurements
+produce a new placement, the migration scheduler orders the required weight
+copies, and each layer is activated at a safe boundary. The dashed connection
+emphasizes the central problem: background transfers and foreground inference
+use the same network resources.
 
 \begin{figure}[t]
   \centering

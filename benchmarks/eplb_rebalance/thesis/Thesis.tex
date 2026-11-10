@@ -209,6 +209,9 @@ del carico, migrazione degli esperti, contesa di rete, vLLM, NIXL
 \thispagestyle{empty}
 \tableofcontents
 \thispagestyle{empty}
+\listoffigures
+\listoftables
+\printglossary[type=\acronymtype]
 \cleardoublepage
 
 \addtocontents{toc}{\vspace{2em}}
@@ -217,16 +220,15 @@ del carico, migrazione degli esperti, contesa di rete, vLLM, NIXL
 \chapter{Introduction}
 \input{Chapters/01_introduction}
 
-\chapter{Background}
+\chapter{Background and Related Work}
 \input{Chapters/02_background}
-
-\chapter{Related Work}
+\section{Related Work}
 \input{Chapters/03_related_work}
 
-\chapter{Contention-Aware Expert Migration Scheduling}
-\section{Problem Formulation}
+\chapter{Problem Statement and Formulation}
 \input{Chapters/03_formulation}
-\section{System Design and Implementation}
+
+\chapter{Methodology and System Design}
 \input{Chapters/04_design}
 
 \chapter{Experimental Evaluation}
@@ -249,10 +251,6 @@ del carico, migrazione degli esperti, contesa di rete, vLLM, NIXL
 
 \chapter{Metric Definitions and Supplementary Results}
 \input{Chapters/appendix_metrics}
-
-\printglossary[type=\acronymtype]
-\listoffigures
-\listoftables
 
 \chapter*{Acknowledgements}
 I would like to thank my advisor, Prof. Massimo Tornatore, and my co-advisor,

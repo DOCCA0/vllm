@@ -30,6 +30,9 @@ comparison.
 
 \subsection{Hardware and software environment}
 
+\Cref{tab:environment} records the hardware, software, network, model, and
+profiling tools used for the final A/B comparison.
+
 \begin{table}[t]
   \centering
   \caption{Experimental environment.}
@@ -111,6 +114,18 @@ production traffic. The experiment studies system interference under frequent
 migration, not application-level output quality. Because placement batching
 does not modify model computation or routing decisions, no accuracy evaluation
 is required for the feature itself.
+
+\subsection{Baseline and proposed condition}
+
+The baseline disables migration batching and uses vLLM's legacy migration
+execution. For each layer, it posts every remote send and receive before one
+communicator execution, so migration has no scheduler-created batch boundaries.
+The proposed condition enables only the
+\code{enable\_migration\_batching} flag. It derives the same migrations and
+reaches the same expert placement, but groups coalesced rank-pair flows with the
+algorithm in \cref{alg:greedy} and executes the resulting batches sequentially.
+This baseline isolates the contribution under study; it is not a different
+placement policy, model, workload, or communication backend.
 
 \subsection{A/B procedure and controls}
 

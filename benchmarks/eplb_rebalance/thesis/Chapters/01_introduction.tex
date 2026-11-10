@@ -124,10 +124,11 @@ specified in \cref{ch:methodology} and the appendices.
 \section{Thesis structure}
 
 \Cref{ch:background} introduces sparse MoE inference, expert parallelism,
-vLLM EPLB, and asynchronous migration. \Cref{ch:related-work} reviews MoE
-communication, coflow scheduling, and graph-based migration grouping.
-\Cref{ch:formulation,ch:design} then develop the contention model and the
-production scheduler within one proposed-system chapter.
+vLLM EPLB, and asynchronous migration; its related-work section positions this
+thesis against MoE systems, coflow scheduling, and LLM serving research.
+\Cref{ch:formulation} states the migration-scheduling problem and develops the
+offline ILP. \Cref{ch:design} presents the production methodology, greedy
+scheduler, correctness properties, and vLLM integration.
 \Cref{ch:methodology,ch:results} document the evaluation procedure and report
 the E2E, NIC, and profiling results within one experimental-evaluation chapter.
 Finally, \cref{ch:conclusions} summarizes the findings, limitations, and future

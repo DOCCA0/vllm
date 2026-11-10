@@ -1,12 +1,18 @@
 \label{ch:related-work}
 
-\section{MoE communication and load balancing}
+\subsection{MoE communication and load balancing}
 
 Most MoE literature treats balance at training time, routing time, or expert
 placement time. Load-balancing losses and bias updates aim to prevent router
 collapse \cite{fedus2021switch,wang2024lossfree}. Distributed inference adds a
 systems bottleneck: expert parallelism interleaves computation with all-to-all
-communication. Lina shows that skewed expert popularity creates imbalanced
+communication. Systems including FasterMoE, Tutel, and MegaBlocks optimize
+dynamic routing, parallel layouts, or sparse expert computation
+\cite{he2022fastermoe,hwang2023tutel,gale2023megablocks}. FlexMoE goes further
+by changing expert placement in response to observed load
+\cite{nie2023flexmoe}. These systems establish that routing skew must be handled
+at runtime, but they do not schedule vLLM's background EPLB weight migration
+against concurrent inference. Lina shows that skewed expert popularity creates imbalanced
 transfer sizes and bandwidth demand, and reports substantial P95 inference
 latency improvements from communication-aware scheduling
 \cite{li2023lina}. COMET independently reports that inter-device
@@ -22,7 +28,20 @@ A placement algorithm decides \emph{what} state should move; the migration
 scheduler decides \emph{when} independent transfers should share network
 resources. The two decisions are complementary.
 
-\section{Collective-flow scheduling}
+\subsection{LLM serving interference and runtime movement}
+
+Iteration-level batching in Orca and PagedAttention in vLLM show that online
+request scheduling is essential to serving efficiency
+\cite{yu2022orca,kwon2023vllm}. More recent systems isolate different forms of
+interference: DistServe separates prefill from decode, Sarathi-Serve uses
+chunked prefills to avoid decode stalls, and Llumnix migrates live request state
+between instances to improve load balance and tail latency
+\cite{zhong2024distserve,agrawal2024sarathi,sun2024llumnix}. The present work
+addresses a different object and time scale. It does not move requests or KV
+caches and does not change request batching; it schedules expert-weight copies
+that arise only when EPLB installs a new placement.
+
+\subsection{Collective-flow scheduling}
 
 A set of expert migrations resembles a coflow: several point-to-point flows
 share a common completion or interference objective. Varys models coflow
@@ -34,7 +53,7 @@ simpler: it uses fixed routes and a normalized foreground-traffic parameter,
 and it optimizes a serving-interference surrogate rather than coflow
 completion time.
 
-\section{Graph scheduling and expert migration}
+\subsection{Graph scheduling and expert migration}
 
 A migration layer can be represented by a graph whose vertices are ranks and
 whose directed edges are remote flows. If each rank may participate in at most
@@ -54,3 +73,14 @@ interference formulation and the integration of this rule into vLLM's
 asynchronous EPLB path, including deterministic flow construction, NIXL
 lifecycle handling, cycle-wide schedule precomputation, correctness tests,
 and end-to-end serving evaluation.
+
+\subsection{Positioning of this thesis}
+
+Prior MoE systems primarily optimize token dispatch, expert computation, or
+placement, while coflow systems optimize transfer completion and LLM-serving
+systems schedule requests or KV-cache movement. This thesis begins after an
+EPLB policy has selected a placement and asks how to realize that decision
+without producing avoidable NIC bursts during inference. Its distinct
+contribution is the combination of an interference-oriented formulation, a
+dependency-free rank-pair batching rule, communicator-aware execution, and an
+upstream vLLM implementation evaluated with both serving and NIC measurements.

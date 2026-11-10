@@ -36,6 +36,10 @@ percentile should not be interpreted as an algebraic sum of percentile changes:
 each percentile may correspond to a different request, and E2E accumulates
 many decode intervals.
 
+\Cref{fig:e2e-improvement} visualizes the same table as signed relative
+improvements, using positive values for both higher throughput and lower
+latency.
+
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.92\textwidth]{e2e_improvement.png}
@@ -87,7 +91,8 @@ claim.
 All four ranks recorded 34 calls to the cycle-wide scheduling range during the
 formal profiling window. Since one call prepares all 48 layer schedules, the
 trace represents 34 rebalance-cycle scheduling events per rank, not
-$34\times48$ independent top-level calls.
+$34\times48$ independent top-level calls. The per-rank distributions and
+cumulative durations are reported in \cref{tab:profile}.
 
 \begin{table}[t]
   \centering
@@ -130,7 +135,10 @@ A/B saving gives
   \label{fig:cost-saved}
 \end{figure}
 
-This comparison shows that the measured scheduler cost is small relative to
+\Cref{fig:cost-saved} keeps both quantities on a linear scale: the small orange
+bar is the largest measured cumulative scheduling cost on one rank, and the
+green bar is the independent A/B serving-time difference. This comparison
+shows that the measured scheduler cost is small relative to
 the observed completion-time difference. It is not a causal decomposition of
 the saving: the profiler run is separate, and the 105.932 s difference includes
 all downstream effects. It nevertheless answers the maintainer-facing systems

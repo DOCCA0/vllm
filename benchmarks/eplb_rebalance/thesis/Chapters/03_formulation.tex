@@ -1,6 +1,6 @@
 \label{ch:formulation}
 
-\subsection{Migration instructions and flows}
+\section{Migration instructions and flows}
 
 Consider one MoE layer before and after a rebalance. Let $R$ be the set of EP
 ranks and $E$ the set of logical experts. The old and new placement arrays
@@ -30,7 +30,23 @@ distributed as evenly as possible over source replicas in deterministic rank
 order. Migration batching changes ordering, not placement semantics or replica
 ownership.
 
-\subsection{Network model}
+\section{Problem inputs and output}
+
+The optimization instance has five input groups: the coalesced migration flows
+$P$ and their sizes $w_p$; the candidate batch set $B$; the routed-link set
+$\mathcal{L}$ with capacities $C_e$; the fixed route fractions $f_{p,e}$; and
+the foreground parameters $T_0$ and $\rho$. The optional diagnostic additionally
+uses a fixed per-batch overhead $\delta$. These values describe what must move,
+where it can travel, and how much network headroom remains for migration.
+
+The required output is a batch assignment for every flow. Equivalently, the
+solver returns the binary variables $x_{p,b}$ and $y_b$, from which the ordered
+list of active batches is reconstructed. A valid output schedules every input
+flow exactly once. The primary objective is the smallest worst-case modeled
+inference time; among schedules with that value, the secondary objective is the
+smallest number of active batches.
+
+\section{Network model}
 
 The offline model supports an explicit network graph and a compact two-tier
 topology. In the latter, GPUs connect to server endpoints through local links;
@@ -51,7 +67,7 @@ measurements; the illustrative ILP instead uses one normalized $\rho$ for all
 links. It is therefore a scenario parameter, not a deployment-independent
 empirical constant.
 
-\subsection{Constrained integer linear program}
+\section{Constrained integer linear program}
 
 Let $P$ be the set of coalesced flows and $B=\{0,\ldots,|P|-1\}$ a safe upper
 bound on candidate batches. The binary assignment variable is
@@ -124,7 +140,7 @@ weighted sum between foreground latency and batch overhead. The implementation
 therefore performs two actual mixed-integer solves through SciPy's interface
 to HiGHS \cite{scipy2020,huangfu2018highs}.
 
-\subsection{Migration-time diagnostic}
+\section{Migration-time diagnostic}
 
 The ILP deliberately optimizes modeled inference time, not migration time. To
 make the trade-off visible, it reports a diagnostic. The duration of batch $b$
@@ -148,7 +164,7 @@ is not a contradiction. The two quantities answer different questions: the
 first represents foreground interference; the second represents how long the
 background reconfiguration remains unfinished.
 
-\subsection{Illustrative hotspot instance}
+\section{Illustrative hotspot instance}
 
 The example contains eight GPU ranks, two GPUs per server, local-link capacity
 18, network-link capacity 2, and $\rho=0.6$, leaving 40\% normalized link
@@ -159,6 +175,11 @@ $\rho$ multiplies every candidate link--batch pair, changing it uniformly
 rescales the reported value of $T_{\mathrm{infer}}$ but does not change which
 batch assignment minimizes the objective. A production predictor should
 replace it with per-link residual bandwidth measured at runtime.
+
+\Cref{fig:ilp-before-after} shows the routed topology, the unbatched hotspot,
+and the schedule returned by the two-stage ILP. Arrow labels identify logical
+experts, while the batch labels in the rightmost panel show which transfers
+execute together.
 
 \begin{figure}[p]
   \centering
@@ -208,7 +229,7 @@ online scheduler: spread contending flows while preserving useful parallelism.
 The production scheduler realizes that insight with a simpler, conservative
 rank-disjoint rule; that rule is not imposed on this ILP.
 
-\subsection{Why the ILP is not used online}
+\section{Why the ILP is not used online}
 
 The optimizer is intentionally separated from the serving path. It is not an
 ``optimal implementation'' of EPLB: it is an exact offline reference for one
