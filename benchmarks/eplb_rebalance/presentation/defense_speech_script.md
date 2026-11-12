@@ -15,8 +15,8 @@ This work improves expert migration in vLLM. I am proud that it was merged
 into the official vLLM project. This means the work is
 useful in a real serving system. It is not only an exercise for my thesis.
 
-I would also like to thank my advisor, Professor Massimo Tornatore, and my
-co-advisor, Assistant Professor Qiaolun Zhang, for their support.
+I would also like to thank my advisor, Professor Qiaolun Zhang, and
+my co-advisor, Professor Massimo Tornatore, for their support.
 
 The main idea is simple. Conflicting transfers are separated. Independent
 transfers can still run together.

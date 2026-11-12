@@ -590,7 +590,7 @@ for i, (label, flows, color) in enumerate(
 add_text(slide, "Advisor", 5.02, 5.45, 1.1, 0.25, size=10, color=BLUE, bold=True)
 add_text(
     slide,
-    "Prof. Massimo Tornatore",
+    "Prof. Qiaolun Zhang",
     6.2,
     5.41,
     2.9,
@@ -602,7 +602,7 @@ add_text(
 add_text(slide, "Co-advisor", 5.02, 5.9, 1.1, 0.25, size=10, color=BLUE, bold=True)
 add_text(
     slide,
-    "Assistant Prof. Qiaolun Zhang",
+    "Prof. Massimo Tornatore",
     6.2,
     5.86,
     3.4,
