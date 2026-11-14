@@ -1,0 +1,5 @@
+assumed_rho,unbatched_inference,optimal_inference,optimal_batches,unbatched_peak_normalized_load,optimal_peak_normalized_load
+0.0,4.0,2.0,3,3.0,1.0
+0.3,5.285714,2.428571,3,3.0,1.0
+0.6,8.5,3.5,3,3.0,1.0
+0.9,31.0,11.0,3,3.0,1.0

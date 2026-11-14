@@ -3,12 +3,15 @@
 Build from this directory:
 
 ```bash
-latexmk -pdf -interaction=nonstopmode -halt-on-error Thesis.tex
-makeglossaries Thesis
-latexmk -pdf -interaction=nonstopmode -halt-on-error Thesis.tex
+latexmk -pdf -jobname=2026_12_WU -interaction=nonstopmode -halt-on-error Thesis.tex
+makeglossaries 2026_12_WU
+latexmk -pdf -jobname=2026_12_WU -interaction=nonstopmode -halt-on-error Thesis.tex
 ```
 
-The generated `Thesis.pdf` includes front matter, bibliography, appendices,
+Keep only `2026_12_WU.pdf` as the complete-thesis PDF; do not retain a duplicate
+`Thesis.pdf`. The source main document remains `Thesis.tex`.
+
+The generated `2026_12_WU.pdf` includes front matter, bibliography, appendices,
 acronym/list pages, acknowledgements, and two-sided blank pages. Its six main
 chapters follow the MSc writing guidelines: introduction; background and
 related work; problem statement and formulation; methodology and system

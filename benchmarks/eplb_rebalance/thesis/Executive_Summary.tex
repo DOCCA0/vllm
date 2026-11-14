@@ -71,9 +71,17 @@ The model first minimizes the worst modeled inference time,
 then minimizes $\sum_b y_b$ while preserving the primary optimum. This strict
 two-stage order avoids choosing an arbitrary weight between inference protection
 and batch overhead. In the illustrative eight-rank hotspot, the ILP reduces peak
-normalized link utilization from 1.50 to 0.50 and modeled inference time from
-4.75 to 2.25, using three batches. Figure~\ref{fig:summary-ilp} shows the
+normalized link load from 3.00 to 1.00 and modeled inference time from
+8.50 to 3.50, using three batches. Figure~\ref{fig:summary-ilp} shows the
 topology, the unbatched hotspot, and the resulting schedule.
+The example uses normalized capacities 2 and 1 derived from DEMI's reported
+100~Gb/s intra-server and 50~Gb/s inter-server bandwidths
+\cite{zhang2025demi}, taking the inter-server bandwidth as the reference.
+Capacity denotes expert payloads per reference interval,
+not bandwidth in Gb/s. The foreground share $\rho=0.6$ is an assumed scenario,
+not an empirical constant; solves at 0, 0.3, 0.6, and 0.9 all select three
+batches. The affine latency law is an illustrative surrogate, not a measured
+or theoretically guaranteed inference-time bound.
 
 \begin{figure}[t]
   \centering

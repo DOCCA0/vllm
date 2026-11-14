@@ -1,0 +1,79 @@
+{
+  "config": {
+    "time_limit": 30,
+    "mip_rel_gap": 0,
+    "base_inference_time": 1.0,
+    "batch_overhead": 0.05
+  },
+  "network": {
+    "num_gpus": 8,
+    "gpus_per_server": 2,
+    "local_capacity": 2.0,
+    "network_capacity": 1.0,
+    "inference_traffic": 0.6
+  },
+  "provenance": {
+    "bandwidth_source": "Zhang and Wu, Dynamic Expert Migration for Expedited Mixture-of-Experts Training, IWQoS 2025, Section V-A",
+    "source_url": "https://i.cs.hku.hk/~cwu/papers/zzhang-iwqos25.pdf",
+    "intra_server_gbps": 100,
+    "inter_server_gbps": 50,
+    "normalization_bandwidth_gbps": 50,
+    "capacity_definition": "C_e = physical bandwidth / inter-server bandwidth (50 Gb/s); standard expert payloads transferable per reference interval",
+    "payload_reference": "DEMI reports 7.64 MB per expert; use decimal MB for this illustrative conversion",
+    "reference_payload_bytes": 7640000,
+    "reference_interval_ms": 1.2224,
+    "rho_status": "0.6 is an assumed scenario, not a measured or literature-derived inference utilization",
+    "topology_status": "Reduced eight-rank, two-GPU-per-server illustration; not a reproduction of DEMI's cluster or the Qwen serving cluster",
+    "model_status": "Normalized linear interference surrogate; not a calibrated inference latency predictor"
+  },
+  "migrations": [
+    {
+      "layer": 0,
+      "expert": 1,
+      "src": 1,
+      "dst": 0
+    },
+    {
+      "layer": 0,
+      "expert": 2,
+      "src": 4,
+      "dst": 2
+    },
+    {
+      "layer": 0,
+      "expert": 3,
+      "src": 5,
+      "dst": 3
+    },
+    {
+      "layer": 0,
+      "expert": 4,
+      "src": 6,
+      "dst": 2
+    },
+    {
+      "layer": 0,
+      "expert": 5,
+      "src": 7,
+      "dst": 1
+    },
+    {
+      "layer": 0,
+      "expert": 6,
+      "src": 0,
+      "dst": 4
+    },
+    {
+      "layer": 0,
+      "expert": 7,
+      "src": 1,
+      "dst": 5
+    },
+    {
+      "layer": 0,
+      "expert": 8,
+      "src": 1,
+      "dst": 6
+    }
+  ]
+}

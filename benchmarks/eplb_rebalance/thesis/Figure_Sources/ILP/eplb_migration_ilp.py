@@ -410,7 +410,7 @@ def solve_with_scipy(
     upper_bounds = np.ones(var_count, dtype=float)
     min_capacity = min(capacities[link] for link in links)
     upper_bounds[inference_time_idx] = config.base_inference_time * (
-        1.0 + n / min_capacity
+        1.0 + n / (min_capacity * (1.0 - config.inference_traffic))
     )
     options: dict[str, Any] = {}
     if config.time_limit is not None:
@@ -869,12 +869,10 @@ def build_link_mermaid_diagram(
             directions.append((link.dst_rank, link.src_rank))
         load = max(max_loads.get(direction, 0.0) for direction in directions)
         cap = capacities[(link.src_rank, link.dst_rank)]
+        label = f"C={_clean_float(cap)}"
+        lines.append(f'    {src_node} {edge}|"{label}"| {dst_node}')
         if load + 1e-9 >= cap:
-            label = f"{_clean_float(load)}/{_clean_float(cap)}"
-            lines.append(f'    {src_node} {edge}|"{label}"| {dst_node}')
             hot_edges.append(edge_idx)
-        else:
-            lines.append(f"    {src_node} {edge} {dst_node}")
     for edge_idx in hot_edges:
         lines.append(f"    linkStyle {edge_idx} stroke:#b91c1c,stroke-width:4px")
     lines.append("  end")
@@ -951,6 +949,17 @@ def write_migration_visualization(
     try:
         render_mermaid(build_before_mermaid_diagram(instructions), before_output)
         render_mermaid(build_after_mermaid_diagram(schedule), after_output)
+        for batch in sorted({int(item["batch"]) for item in schedule}):
+            batch_output = output_path.with_name(
+                f"{output_path.stem}_batch{batch}{output_path.suffix}"
+            )
+            render_mermaid(
+                build_after_mermaid_diagram(
+                    [item for item in schedule if int(item["batch"]) == batch]
+                ),
+                batch_output,
+            )
+            rendered_outputs.append(batch_output)
         if config.network is not None:
             render_mermaid(
                 build_link_mermaid_diagram(instructions, config.network, schedule),

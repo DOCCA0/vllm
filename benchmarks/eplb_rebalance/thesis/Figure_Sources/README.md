@@ -6,6 +6,11 @@ the thesis figures, as requested by the thesis-writing guidelines.
 - `ILP/` contains the two-stage ILP implementation and illustrative instance
   used for `example_hotspot_before.png`, `example_hotspot_after.png`, and
   `example_hotspot_links.png`.
+  `ILP/README.md` documents bandwidth provenance (DEMI, IWQoS 2025), units,
+  and model assumptions. `example_hotspot_solution.json` and
+  `rho_sensitivity.csv` contain the rerun outputs. Run `reproduce_example.py`
+  there to regenerate them. The 60% inference share is an assumed scenario,
+  not a value reported by that paper.
 - `results/serving_nixl_20260911_async_random500/` contains the plotting script,
   final benchmark JSON files, and one-second NIC samples used for
   `e2e_improvement.png` and `nic_timeseries.png`.

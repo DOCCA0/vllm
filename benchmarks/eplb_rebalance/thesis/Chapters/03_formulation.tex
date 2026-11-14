@@ -51,7 +51,7 @@ smallest number of active batches.
 The offline model supports an explicit network graph and a compact two-tier
 topology. In the latter, GPUs connect to server endpoints through local links;
 server endpoints share a slower inter-server network. Let $\mathcal{L}$ be the
-set of routed links and $C_e>0$ the capacity of link $e\in\mathcal{L}$. Fixed
+set of routed links and $C_e>0$ the normalized capacity of link $e\in\mathcal{L}$. Fixed
 shortest-path ECMP determines $f_{p,e}$, the fraction of flow $p$ routed over
 $e$. In the illustrative instance there is a single path for each flow, so
 $f_{p,e}$ is binary.
@@ -66,6 +66,41 @@ link capacity occupied by inference. Varys estimates residual bandwidth from
 measurements; the illustrative ILP instead uses one normalized $\rho$ for all
 links. It is therefore a scenario parameter, not a deployment-independent
 empirical constant.
+
+\paragraph{Normalization and provenance.}
+We adopt the 100~Gb/s intra-server and 50~Gb/s inter-server bandwidths reported
+in Section V-A of DEMI \cite{zhang2025demi}. The example reduces the topology
+to eight ranks; it is not a reproduction of DEMI's hardware deployment or our
+Qwen serving cluster. Let $b_e$ denote physical bandwidth and $b_{\mathrm{ref}}$
+be the reported inter-server bandwidth, 50~Gb/s, used as the normalization.
+For equal expert payload size $S$, a
+reference interval has duration $S/b_{\mathrm{ref}}$ when both use consistent
+bit units. Capacity counts payloads transferable within that interval:
+
+\begin{equation}
+ C_e=\frac{b_e}{b_{\mathrm{ref}}}=
+ \begin{cases}
+ 2 & \text{for a local link},\\
+ 1 & \text{for a network link}.
+ \end{cases}
+\end{equation}
+
+Thus $C_e$ is not a bandwidth in Gb/s, and $L_{e,b}/C_e$ is dimensionless.
+For a concrete illustration, DEMI reports a 7.64~MB expert; taking decimal MB
+gives a 1.2224~ms reference interval. All model times below are expressed in
+reference-interval units, not measured Qwen latencies. DEMI also defines
+communication capacity as data transferable within a time slot (Section III-B).
+The normalization fixes the example's offered load; scaling both capacities
+without scaling the reference interval changes the scenario.
+
+\paragraph{Multi-hop approximation.}
+Each migration contributes load to every link on its route. Links are assumed
+to support ideal streaming/pipelining, not whole-expert store-and-forward.
+Network calculus shows that tandem rate--latency servers combine the minimum
+rate with the sum of fixed latencies \cite[Theorem~1.4.6]{leboudec2001networkcalculus}.
+We retain the bottleneck term and neglect per-hop propagation, startup,
+packetization and staging delays. This is a simplifying assumption rather than
+a verified characterization of every NIXL transport.
 
 \section{Constrained integer linear program}
 
@@ -104,7 +139,7 @@ The migration load on routed link $e$ in batch $b$ is
 \end{equation}
 
 Let $T_0$ be inference time without migration. The model assumes slowdown is
-linear in migration load relative to residual link capacity:
+linear in migration load relative to normalized residual link capacity:
 
 \begin{equation}
   T_{\mathrm{infer}} \geq
@@ -115,7 +150,13 @@ linear in migration load relative to residual link capacity:
 
 The maximum-over-links structure follows the standard bottleneck observation
 that a collection of parallel network flows is limited by its most heavily
-loaded endpoint or link \cite{chowdhury2014varys}. The primary optimization is
+loaded endpoint or link \cite{chowdhury2014varys}. Varys supports this bottleneck
+abstraction, not the particular affine inference-slowdown law in
+\cref{eq:slowdown}. That law is an explicit modeling assumption: it is neither
+a calibrated latency predictor nor a proven upper bound on actual inference
+latency. DEMI provides a related optimization of expert migration and token
+traffic under shared capacity, but targets training and uses a different
+time-indexed formulation \cite{zhang2025demi}. The primary optimization is
 
 \begin{equation}
   T_{\mathrm{infer}}^*=\min T_{\mathrm{infer}}.
@@ -167,14 +208,41 @@ background reconfiguration remains unfinished.
 \section{Illustrative hotspot instance}
 
 The example contains eight GPU ranks, two GPUs per server, local-link capacity
-18, network-link capacity 2, and $\rho=0.6$, leaving 40\% normalized link
-headroom for migration. Eight migrations create a shared-network hotspot. The
-numeric units and the 40\% headroom are a deliberately stressed illustrative
-scenario, not measurements from the experimental cluster. Because the same
+2, network-link capacity 1, and $\rho=0.6$, leaving 40\% normalized link
+headroom for migration. The capacities derive from the cited 100:50~Gb/s
+bandwidths; the 60\% foreground share is an assumed illustrative scenario,
+not a value measured in DEMI or in our experimental cluster. There is no
+workload-independent inference bandwidth fraction. We retain $T_0=1$ and
+$\delta=0.05$ as explicitly assumed normalized values. Eight migrations create
+a shared-network hotspot. Because the same
 $\rho$ multiplies every candidate link--batch pair, changing it uniformly
 rescales the reported value of $T_{\mathrm{infer}}$ but does not change which
 batch assignment minimizes the objective. A production predictor should
 replace it with per-link residual bandwidth measured at runtime.
+
+We repeat the two-stage solve at $\rho\in\{0,0.3,0.6,0.9\}$;
+\cref{tab:rho-sensitivity} reports the results. Every solve selects three
+batches and reduces the peak normalized link load from 3.00 to 1.00. This
+checks the expected uniform rescaling; it does not validate the affine model
+or heterogeneous traffic. The main example uses $\rho=0.6$ throughout.
+
+\begin{table}[t]
+  \centering
+  \caption{Sensitivity to the assumed uniform foreground share $\rho$.
+  Inference times are normalized model outputs, not measured latencies.
+  The optimized schedule uses three batches in every case.}
+  \label{tab:rho-sensitivity}
+  \begin{tabular}{rrrr}
+    \toprule
+    Assumed $\rho$ & Unbatched $T_{\mathrm{infer}}$ & Optimal $T_{\mathrm{infer}}$ & Batches \\
+    \midrule
+    0.0 & 4.000 & 2.000 & 3 \\
+    0.3 & 5.286 & 2.429 & 3 \\
+    0.6 & 8.500 & 3.500 & 3 \\
+    0.9 & 31.000 & 11.000 & 3 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 \Cref{fig:ilp-before-after} shows the routed topology, the unbatched hotspot,
 and the schedule returned by the two-stage ILP. Arrow labels identify logical
@@ -184,16 +252,19 @@ execute together.
 \begin{figure}[p]
   \centering
   \begin{subfigure}[t]{0.31\textwidth}
+    \vspace{0pt}
     \centering
     \includegraphics[width=\linewidth]{example_hotspot_links.png}
     \caption{Two-tier routed-link topology.}
   \end{subfigure}\hfill
   \begin{subfigure}[t]{0.31\textwidth}
+    \vspace{0pt}
     \centering
     \includegraphics[width=\linewidth]{example_hotspot_before.png}
     \caption{All migrations issued together.}
   \end{subfigure}\hfill
   \begin{subfigure}[t]{0.31\textwidth}
+    \vspace{0pt}
     \centering
     \includegraphics[width=\linewidth]{example_hotspot_after.png}
     \caption{ILP schedule split into batches.}
@@ -212,16 +283,17 @@ execute together.
     \toprule
     Metric & Unbatched & ILP optimum \\
     \midrule
-    Modeled inference time & 4.75 & 2.25 \\
-    Estimated migration time & 1.55 & 1.65 \\
-    Peak link utilization & 1.50 & 0.50 \\
+    Modeled inference time & 8.50 & 3.50 \\
+    Estimated migration time & 3.05 & 3.15 \\
+    Peak normalized link load & 3.00 & 1.00 \\
     Number of batches & 1 & 3 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-As shown in \cref{tab:ilp-result}, the optimum reduces peak link utilization by
-a factor of three and modeled inference time by more than half. The secondary
+As shown in \cref{tab:ilp-result}, the optimum reduces peak normalized link load by
+a factor of three and modeled inference time by more than half. These are
+normalized scenario results, not predictions of measured latency. The secondary
 objective selects three batches among schedules with the same primary optimum;
 the estimated migration time rises only because the diagnostic includes a
 fixed cost for every batch. This result supplied the design insight for the
