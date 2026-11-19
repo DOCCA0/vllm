@@ -16,7 +16,7 @@ writing* (5 August 2024).
 | Conclusions and future work | Chapter 6 summarizes outcomes and lists future directions. |
 | Figures and tables | Every numbered figure, table, and algorithm is referenced in the text and has a descriptive caption. Lists of figures and tables are in the front matter. |
 | Editable figure sources | `Figure_Sources/` contains plotting code, the final input data, and the ILP generator; the control-loop diagram is native TikZ. |
-| At least 30 references | The full thesis renders 33 bibliography entries, all cited in the text. |
+| At least 30 references | The full thesis renders 57 bibliography entries, all cited in the text. |
 | Readability aids | The thesis uses sections, subsections, numbered research questions, lists, tables, figures, and pseudocode. |
 | Evaluation assumptions | Chapter 5 states the topology, model, workload, cache setting, baseline, run order, metric definitions, data provenance, and limitations. |
 

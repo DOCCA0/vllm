@@ -5,6 +5,9 @@
 \usepackage[utf8]{inputenc}
 \usepackage{microtype}
 \usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}
 \usepackage{booktabs}
 \usepackage{amsmath}
 \usepackage{natbib}
@@ -85,15 +88,7 @@ or theoretically guaranteed inference-time bound.
 
 \begin{figure}[t]
   \centering
-  \begin{minipage}{0.32\textwidth}
-    \includegraphics[width=\linewidth]{example_hotspot_links.png}
-  \end{minipage}\hfill
-  \begin{minipage}{0.32\textwidth}
-    \includegraphics[width=\linewidth]{example_hotspot_before.png}
-  \end{minipage}\hfill
-  \begin{minipage}{0.32\textwidth}
-    \includegraphics[width=\linewidth]{example_hotspot_after.png}
-  \end{minipage}
+  \input{Figure_Sources/ILP/hotspot_panels}
   \caption{Illustrative topology, unbatched migration hotspot, and the
   three-batch ILP schedule.}
   \label{fig:summary-ilp}
@@ -153,7 +148,7 @@ Figure~\ref{fig:summary-e2e} visualizes the signed improvements.
 
 \begin{figure}[ht]
   \centering
-  \includegraphics[width=0.88\textwidth]{e2e_improvement.png}
+  \includegraphics[width=\textwidth]{e2e_improvement.png}
   \caption{Signed relative improvement with migration batching enabled. Positive
   values denote higher throughput or lower latency.}
   \label{fig:summary-e2e}
@@ -172,7 +167,7 @@ A/B run saves 105.932~s, so the conservative cost-to-saved ratio is 0.285\%.
 The profile and serving experiment are separate, so this ratio is a scale
 comparison rather than a causal decomposition.
 
-\section{Conclusions}
+\section{Conclusions and Future Work}
 
 Asynchronous expert migration should be evaluated as part of serving rather than
 as an isolated transfer benchmark. The offline model shows why more migration
@@ -180,9 +175,13 @@ batches can reduce foreground interference even when migration takes slightly
 longer. The production design turns this observation into a deterministic,
 dependency-free scheduler with explicit communicator boundaries and a safe
 opt-in configuration. In the evaluated deployment, throughput, TTFT, TPOT,
-E2E latency, and NIC tail traffic all improve. Future work should repeat and
-randomize experiments on server-class GPUs and RDMA fabrics, measure every node,
-and adapt the per-rank concurrency limit to observed network headroom.
+E2E latency, and NIC tail traffic all improve.
+
+Future work should repeat the comparison across models, workloads, and network
+backends, with randomized run order and per-node NIC measurements. These
+measurements could inform a scheduler that adapts migration concurrency to
+available bandwidth. Evaluation should track both serving tail latency and
+the time needed to activate the new placement.
 
 \bibliographystyle{abbrvnat}
 \bibliography{Thesis_bibliography}

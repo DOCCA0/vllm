@@ -21,6 +21,24 @@ the evaluated models and frameworks \cite{zhang2025comet}. These measurements
 motivate treating network interference as a first-class serving concern. They
 do not, however, imply a universal fixed link-utilization ratio.
 
+BASE balances token-to-expert assignments directly, while Expert Choice
+gives experts fixed-size buckets and allows the number of experts selected per
+token to vary \cite{lewis2021base,zhou2022expertchoice}. Both redesign routing;
+neither addresses how to schedule copies after a new expert placement has
+been selected. FastMoE and MoESys tackle distributed MoE execution, whereas
+MoE-Infinity uses an expert cache to reduce the cost of fetching weights on
+memory-constrained machines
+\cite{he2021fastmoe,yu2022moesys,xue2024moeinfinity}. In this thesis, migration
+instead changes which GPU ranks hold resident expert weights.
+
+ExFlow exploits affinity between experts in successive layers to improve token
+locality, whereas MoEShard splits expert computation across devices to reduce
+rank imbalance \cite{yao2024exflow,balmau2025moeshard}. MegaScale-Infer separates
+attention and expert computation onto different GPUs so that the two stages can
+scale independently \cite{zhu2025megascaleinfer}. These approaches change where
+inference computation runs or how tokens travel. Our scheduler instead takes
+the placement as given and orders the weight transfers required to install it.
+
 This work begins after EPLB has already chosen a valid new placement. It does
 not change router probabilities, model outputs, or the placement objective.
 Instead, it schedules the physical copying needed to realize that placement.
@@ -41,17 +59,34 @@ addresses a different object and time scale. It does not move requests or KV
 caches and does not change request batching; it schedules expert-weight copies
 that arise only when EPLB installs a new placement.
 
+Splitwise and Mooncake also separate prompt processing from generation;
+Mooncake makes KV-cache placement and transfer central to serving
+\cite{patel2023splitwise,qin2024mooncake}. SGLang reuses shared prefixes,
+while FlexGen trades latency for throughput by scheduling computation and
+offload across a GPU, host memory, and disk
+\cite{zheng2023sglang,sheng2023flexgen}. Clockwork focuses on predictable
+latency, and AlpaServe uses model parallelism to absorb bursts across models
+\cite{gujarati2020clockwork,li2023alpaserve}. Together these studies illustrate
+why the benefit of an execution policy should be judged under its target
+workload and latency objective, not from isolated operation times alone.
+
 \subsection{Collective-flow scheduling}
 
 A set of expert migrations resembles a coflow: several point-to-point flows
-share a common completion or interference objective. Varys models coflow
+share a common completion or interference objective
+\cite{chowdhury2012coflow}. Varys models coflow
 completion through the most heavily loaded ingress or egress endpoint and the
 remaining measured bandwidth at that endpoint \cite{chowdhury2014varys}. This
 bottleneck view is closely related to the maximum normalized link-load term in
 the ILP developed in \cref{ch:formulation}. The present model is intentionally
 simpler: it uses fixed routes and a normalized foreground-traffic parameter,
 and it optimizes a serving-interference surrogate rather than coflow
-completion time.
+completion time. Aalo instead aims to reduce coflow completion times
+without advance knowledge of flow sizes \cite{chowdhury2015aalo}; Philae
+estimates coflow sizes by sampling a subset of their flows
+\cite{jajoo2019philae}. Here the
+migration flows are known when the plan is built; the uncertain quantity is
+the bandwidth available while inference is in progress.
 
 \subsection{Graph scheduling and expert migration}
 
@@ -61,7 +96,10 @@ one flow in a batch, edges sharing an endpoint cannot receive the same batch
 identifier. This is an edge-coloring constraint \cite{west2001graph}. Transfer
 direction and expert identity remain necessary for execution, but direction
 does not change whether two flows contend at an endpoint. Each generated batch
-is a matching in this rank graph.
+is a matching in this rank graph. Finding the minimum number of colors
+in a general graph is computationally hard \cite{holyer1981edge}; this
+result applies to minimum edge coloring, not directly to the network-based
+ILP in \cref{ch:formulation}.
 
 Exact edge coloring alone is not the complete systems objective: topology,
 transfer sizes, replica choices, and foreground traffic also matter. The

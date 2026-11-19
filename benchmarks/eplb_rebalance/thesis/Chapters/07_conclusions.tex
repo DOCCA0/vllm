@@ -42,25 +42,16 @@ cluster, uses a synthetic random workload, samples NIC traffic on only the head
 node, and evaluates one migration backend. Accordingly, the result is an
 engineering case study rather than a universal throughput claim.
 
-Several extensions follow naturally:
-
-\begin{itemize}
-  \item repeat and randomize A/B runs on server-class GPUs and RDMA networks,
-  reporting confidence intervals and per-node network counters;
-  \item relax the one-flow-per-rank limit using observed foreground load or
-  available bandwidth rather than fixing it statically;
-  \item incorporate topology, heterogeneous expert sizes, and multiple NICs
-  while retaining a deterministic fallback;
-  \item evaluate synchronization semantics and benefit across every supported
-  communicator backend;
-  \item coordinate placement and migration scheduling so a placement policy can
-  account for reconfiguration cost without coupling model routing to a complex
-  online optimizer; and
-  \item expose migration progress and interference metrics for automatic
-  operator tuning.
-\end{itemize}
-
 The broader lesson is that online model reconfiguration should be evaluated as
 part of serving, not as an isolated data-transfer benchmark. A migration that
 finishes later can still be the better systems choice when it protects the
 latency and throughput of user requests.
+
+\paragraph{Future work.}
+A first step is to repeat the A/B comparison across workloads, models, and
+network backends, using randomized run order and per-node NIC measurements
+to quantify variability. These measurements could also inform a
+topology-aware scheduler that adapts the number of concurrent migrations to
+available bandwidth while retaining rank-disjoint batching as a fallback.
+Such an evaluation should measure both serving tail latency and how long a
+new placement takes to become active.

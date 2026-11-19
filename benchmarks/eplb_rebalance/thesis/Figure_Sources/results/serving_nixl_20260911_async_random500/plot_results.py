@@ -10,6 +10,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+plt.rcParams.update({"font.size": 13, "axes.titlesize": 15})
+
 ROOT = Path(__file__).parent
 CASES = {
     "Before: batching off": ROOT / "random_async_off",
@@ -55,6 +57,7 @@ bars = ax.bar([label for label, _, _ in metrics], improvements, color=colors)
 ax.axhline(0, color="#333333", linewidth=0.8)
 ax.set_ylabel("Improvement with batching (%)")
 ax.set_title("Async serving: batching on versus off")
+ax.set_ylim(0, max(improvements) + 0.45)
 ax.grid(axis="y", alpha=0.25)
 ax.set_axisbelow(True)
 for bar, value in zip(bars, improvements):
@@ -64,7 +67,7 @@ for bar, value in zip(bars, improvements):
         f"{value:.2f}%",
         ha="center",
         va="bottom",
-        fontsize=9,
+        fontsize=12,
     )
 fig.tight_layout()
 fig.savefig(ROOT / "e2e_improvement.png", dpi=180)
@@ -91,7 +94,7 @@ for ax, (label, (elapsed, rate)) in zip(axes, nic_data.items()):
     ax.set_ylabel("NIC RX + TX (MB/s)")
     ax.grid(alpha=0.2)
     ax.set_xlim(0, max_x)
-    ax.set_ylim(0, max_y * 1.05)
+    ax.set_ylim(0, max_y * 1.09)
 axes[-1].set_xlabel("Elapsed benchmark time (s)")
 fig.suptitle("Head-node NIC traffic, one-second samples", y=0.995)
 fig.tight_layout()

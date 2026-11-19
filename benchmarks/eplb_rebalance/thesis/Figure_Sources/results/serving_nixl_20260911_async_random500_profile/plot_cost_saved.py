@@ -8,6 +8,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
+plt.rcParams.update({"font.size": 13, "axes.titlesize": 15})
+
 PROFILE_DIR = Path(__file__).parent
 E2E_DIR = PROFILE_DIR.parent / "serving_nixl_20260911_async_random500"
 
@@ -43,7 +45,7 @@ axis.annotate(
     textcoords="offset points",
     ha="center",
     va="bottom",
-    fontsize=10,
+    fontsize=13,
     arrowprops={"arrowstyle": "-", "color": "#555555"},
 )
 axis.text(
@@ -52,7 +54,7 @@ axis.text(
     f"{saved_ms:,.0f} ms",
     ha="center",
     va="bottom",
-    fontsize=10,
+    fontsize=13,
 )
 axis.text(
     0.5,
@@ -60,7 +62,7 @@ axis.text(
     f"Added cost / saved time = {ratio:.3f}%",
     transform=axis.transAxes,
     ha="center",
-    fontsize=11,
+    fontsize=13,
 )
 
 fig.savefig(PROFILE_DIR / "scheduler_cost_vs_saved.png", dpi=180)

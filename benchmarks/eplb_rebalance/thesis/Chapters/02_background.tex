@@ -48,6 +48,15 @@ includes dense and MoE variants \cite{yang2025qwen3}, while DeepSeek-V3 uses a
 large sparse architecture and an auxiliary-loss-free training-time balancing
 strategy \cite{deepseek2024v3}.
 
+The layout of a sparse model is not fixed by the MoE abstraction. Mixtral
+selects two routed experts per token, whereas DeepSeekMoE combines finer-grained
+routed experts with shared experts, a design carried forward in DeepSeek-V2
+\cite{jiang2024mixtral,dai2024deepseekmoe,deepseek2024v2}. OLMoE provides open
+training artifacts and analyzes specialization in its learned router
+\cite{muennighoff2024olmoe}. These architectural differences motivate testing
+migration schedules across models: the number and size of movable experts,
+and the load placed on them, need not match those of the evaluated checkpoint.
+
 The evaluated Qwen3-30B-A3B-Instruct-2507 checkpoint has 30.5 billion total
 parameters, approximately 3.3 billion activated parameters, 48 layers, 128
 experts, and eight selected experts per token \cite{qwen3modelcard}. The gap
@@ -65,6 +74,12 @@ dependence on balanced rank workloads. DeepSpeed-MoE illustrates how expert,
 tensor, and data parallelism can be combined for large-scale MoE inference,
 while also showing that communication and model layout are central systems
 concerns \cite{rajbhandari2022deepspeedmoe}.
+
+Unlike expert parallelism, tensor parallelism splits the operations within a
+layer across devices, as in Megatron-LM \cite{shoeybi2019megatron}. A serving
+engine may combine these forms of parallelism; DeepSpeed Inference illustrates
+how the resulting communication depends on the model and hardware
+\cite{aminabadi2022deepspeedinference}.
 
 Let $a_{k,e}$ be the number of token assignments to logical expert $e$ in layer
 $k$ over an observation window. If rank $r$ hosts a set $H_{k,r}$, a simple
